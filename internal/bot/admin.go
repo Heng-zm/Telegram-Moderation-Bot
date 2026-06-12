@@ -23,6 +23,7 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cfg
 }
 
 // setGroupLock applies or lifts the chat-wide write prohibition.
+// SetChatPermissionsConfig embeds ChatConfig, which holds the ChatID.
 func (b *Bot) setGroupLock(ctx context.Context, chatID int64, lang string, allow bool) {
 	perms := &tgbotapi.ChatPermissions{
 		CanSendMessages:       allow,
@@ -31,7 +32,7 @@ func (b *Bot) setGroupLock(ctx context.Context, chatID int64, lang string, allow
 		CanAddWebPagePreviews: allow,
 	}
 	sc := tgbotapi.SetChatPermissionsConfig{
-		ChatID:      chatID,
+		ChatConfig:  tgbotapi.ChatConfig{ChatID: chatID},
 		Permissions: perms,
 	}
 	if _, err := b.api.Request(sc); err != nil {
