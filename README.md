@@ -49,6 +49,32 @@ Normal Telegram admins can still handle moderation report buttons such as `Ban U
 
 Use `/whoami` in a group to confirm whether the bot sees you as `owner`, `admin`, or `member`.
 
+
+## Fix Telegram `getUpdates` conflict
+
+If logs show:
+
+```text
+Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+```
+
+it means the same `TELEGRAM_BOT_TOKEN` is being polled by another process. Stop old Render services, local `go run` sessions, Docker containers, or any other bot project using the same token. One Telegram bot token can only have one active long-polling consumer.
+
+This build adds two protections:
+
+- A Postgres advisory polling lock, enabled by default, so duplicate Render instances using the same DB do not poll at the same time.
+- Startup webhook cleanup, enabled by default, so old webhooks do not block polling mode.
+
+Config:
+
+```env
+BOT_DELETE_WEBHOOK_ON_START=true
+BOT_DROP_PENDING_UPDATES_ON_START=false
+BOT_DISABLE_DB_POLLING_LOCK=false
+```
+
+Keep `BOT_DISABLE_DB_POLLING_LOCK=false` in production. Set `BOT_DROP_PENDING_UPDATES_ON_START=true` only when you intentionally want to clear old pending Telegram updates during a reset.
+
 ## Run
 
 ```bash

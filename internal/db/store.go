@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,62 @@ type Options struct {
 
 type Store struct {
 	pool *pgxpool.Pool
+}
+
+// AdvisoryLock is a process-level PostgreSQL advisory lock held on a single
+// dedicated connection. The connection must stay open for the lock lifetime.
+type AdvisoryLock struct {
+	conn *pgxpool.Conn
+	key  int64
+	once sync.Once
+}
+
+// TryAcquireAdvisoryLock attempts to acquire a session-level advisory lock.
+// The returned lock must be released by the caller. If acquired is false,
+// another process using the same database already owns the lock.
+func (s *Store) TryAcquireAdvisoryLock(ctx context.Context, key int64) (*AdvisoryLock, bool, error) {
+	if s == nil || s.pool == nil {
+		return nil, false, fmt.Errorf("db: advisory lock: store is closed")
+	}
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("db: acquire advisory lock connection: %w", err)
+	}
+
+	var acquired bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&acquired); err != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("db: acquire advisory lock %d: %w", key, err)
+	}
+	if !acquired {
+		conn.Release()
+		return nil, false, nil
+	}
+	return &AdvisoryLock{conn: conn, key: key}, true, nil
+}
+
+// Release unlocks and releases the dedicated advisory-lock connection.
+func (l *AdvisoryLock) Release(ctx context.Context) error {
+	if l == nil {
+		return nil
+	}
+	var releaseErr error
+	l.once.Do(func() {
+		if l.conn == nil {
+			return
+		}
+		defer l.conn.Release()
+
+		var unlocked bool
+		if err := l.conn.QueryRow(ctx, `SELECT pg_advisory_unlock($1)`, l.key).Scan(&unlocked); err != nil {
+			releaseErr = fmt.Errorf("db: release advisory lock %d: %w", l.key, err)
+			return
+		}
+		if !unlocked {
+			releaseErr = fmt.Errorf("db: advisory lock %d was not held by this session", l.key)
+		}
+	})
+	return releaseErr
 }
 
 func New(ctx context.Context, dsn string, opts Options) (*Store, error) {

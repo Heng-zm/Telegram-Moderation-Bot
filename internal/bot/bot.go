@@ -7,6 +7,7 @@ import (
 	"log"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,9 @@ type Options struct {
 	TaskPollInterval        time.Duration
 	TaskBatchSize           int
 	TaskMaxAttempts         int
+	DeleteWebhookOnStart    bool
+	DropPendingUpdates      bool
+	DisableDBPollingLock    bool
 }
 
 func (o Options) withDefaults() Options {
@@ -103,6 +107,7 @@ type Bot struct {
 	droppedAudits    uint64
 	droppedMetrics   uint64
 	processedMetrics uint64
+	pollLockKey      int64
 }
 
 func New(token string, store *db.Store, opts Options) (*Bot, error) {
@@ -132,6 +137,7 @@ func New(token string, store *db.Store, opts Options) (*Bot, error) {
 		scheduler:    cron.New(cron.WithLocation(time.UTC), cron.WithChain(cron.Recover(cron.DefaultLogger))),
 		opts:         opts,
 		botOwners:    owners,
+		pollLockKey:  defaultPollingLockKey(api.Self.ID),
 	}
 	return b, nil
 }
@@ -139,6 +145,24 @@ func New(token string, store *db.Store, opts Options) (*Bot, error) {
 func (b *Bot) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	pollLock, err := b.acquirePollingLock(ctx)
+	if err != nil {
+		return err
+	}
+	if pollLock != nil {
+		defer func() {
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer releaseCancel()
+			if err := pollLock.Release(releaseCtx); err != nil {
+				log.Printf("[bot] release polling lock: %v", err)
+			}
+		}()
+	}
+
+	if err := b.preparePolling(ctx); err != nil {
+		return err
+	}
 
 	var wg sync.WaitGroup
 	b.safeWorker(ctx, &wg, "audit-log", b.auditLogWorker)
@@ -165,36 +189,107 @@ func (b *Bot) Run(ctx context.Context) error {
 			b.updateWorker(workerCtx, workerID)
 		})
 	}
+	defer func() {
+		cancel()
+		close(b.updates)
+		wg.Wait()
+	}()
 
+	log.Printf("[bot] polling as @%s workers=%d queue=%d daily_cron=%q db_lock=%t", b.api.Self.UserName, b.opts.UpdateWorkers, cap(b.updates), b.opts.DailyReportCron, pollLock != nil)
+	return b.pollUpdates(ctx)
+}
+
+func (b *Bot) acquirePollingLock(ctx context.Context) (*db.AdvisoryLock, error) {
+	if b.opts.DisableDBPollingLock {
+		log.Printf("[bot] DB polling lock disabled by BOT_DISABLE_DB_POLLING_LOCK=true")
+		return nil, nil
+	}
+
+	lockCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	lock, acquired, err := b.store.TryAcquireAdvisoryLock(lockCtx, b.pollLockKey)
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return nil, fmt.Errorf("another Telemod instance is already running for this bot/database; stop the duplicate Render service/local process or set a different TELEGRAM_BOT_TOKEN")
+	}
+	log.Printf("[bot] acquired DB polling lock key=%d", b.pollLockKey)
+	return lock, nil
+}
+
+func (b *Bot) preparePolling(ctx context.Context) error {
+	if !b.opts.DeleteWebhookOnStart {
+		return nil
+	}
+	cfg := tgbotapi.DeleteWebhookConfig{DropPendingUpdates: b.opts.DropPendingUpdates}
+	if _, err := b.api.Request(cfg); err != nil {
+		return fmt.Errorf("telegram: delete webhook before polling: %w", err)
+	}
+	log.Printf("[bot] webhook cleared before polling drop_pending_updates=%t", b.opts.DropPendingUpdates)
+	return nil
+}
+
+func (b *Bot) pollUpdates(ctx context.Context) error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	updates := b.api.GetUpdatesChan(u)
-	defer b.api.StopReceivingUpdates()
-
-	log.Printf("[bot] polling as @%s workers=%d queue=%d daily_cron=%q", b.api.Self.UserName, b.opts.UpdateWorkers, cap(b.updates), b.opts.DailyReportCron)
 
 	for {
 		select {
 		case <-ctx.Done():
-			close(b.updates)
-			wg.Wait()
 			return nil
-		case update, ok := <-updates:
-			if !ok {
-				cancel()
-				close(b.updates)
-				wg.Wait()
-				return fmt.Errorf("telegram updates channel closed")
+		default:
+		}
+
+		updates, err := b.api.GetUpdates(u)
+		if err != nil {
+			if isTelegramPollingConflict(err) {
+				return fmt.Errorf("telegram getUpdates conflict: another process is polling the same bot token; stop other Render deployments/local bots or use a new TELEGRAM_BOT_TOKEN: %w", err)
+			}
+			log.Printf("[bot] getUpdates error: %v; retrying in 3 seconds", err)
+			if !sleepContext(ctx, 3*time.Second) {
+				return nil
+			}
+			continue
+		}
+
+		for _, update := range updates {
+			if update.UpdateID >= u.Offset {
+				u.Offset = update.UpdateID + 1
 			}
 			select {
 			case b.updates <- update:
 			case <-ctx.Done():
-				close(b.updates)
-				wg.Wait()
 				return nil
 			}
 		}
 	}
+}
+
+func isTelegramPollingConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "conflict") || strings.Contains(msg, "terminated by other getupdates") || strings.Contains(msg, "409")
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func defaultPollingLockKey(botID int64) int64 {
+	if botID == 0 {
+		return 770000000000000001
+	}
+	return 770000000000000000 + botID
 }
 
 func (b *Bot) updateWorker(ctx context.Context, workerID int) {
@@ -365,6 +460,10 @@ func (b *Bot) HealthSnapshot() map[string]any {
 		"flood_window":                b.opts.FloodWindow.String(),
 		"bot_owner_count":             len(b.botOwners),
 		"bot_owner_can_manage_groups": b.opts.BotOwnerCanManageGroups,
+		"delete_webhook_on_start":     b.opts.DeleteWebhookOnStart,
+		"drop_pending_updates":        b.opts.DropPendingUpdates,
+		"db_polling_lock_enabled":     !b.opts.DisableDBPollingLock,
+		"polling_lock_key":            b.pollLockKey,
 	}
 }
 

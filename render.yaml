@@ -16,3 +16,10 @@ services:
         value: "2048"
       - key: BOT_DAILY_REPORT_CRON
         value: "0 0 * * *"
+
+      - key: BOT_DELETE_WEBHOOK_ON_START
+        value: "true"
+      - key: BOT_DROP_PENDING_UPDATES_ON_START
+        value: "false"
+      - key: BOT_DISABLE_DB_POLLING_LOCK
+        value: "false"
