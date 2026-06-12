@@ -120,4 +120,3 @@ go test ./internal/security/...
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
 | `DATABASE_URL` | Supabase PostgreSQL connection string |
-# Telegram-Moderation-Bot

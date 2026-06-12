@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+*.zip
+*.md
+.git
+.gitignore
