@@ -1,143 +1,70 @@
-# TeleMod — Enterprise Multi-Tenant Telegram Moderation Bot
+# Telemod Telegram Moderation Bot
 
-A high-performance Go bot for moderating multiple Telegram groups simultaneously, backed by Supabase (PostgreSQL). Supports English and Khmer, with near-zero message latency via async goroutines and sync.Map caching.
+Production-ready Go Telegram moderation bot with bounded update workers, admin dashboard, CAPTCHA, link filtering, bad-word scanning, strike penalties, audit logs, DB-backed scheduled tasks, anti-flood detection, granular media filters, user reports, and cron-based daily reports.
 
----
-
-## Features
-
-| Module | Description |
-|---|---|
-| **Linguistic Scanner** | Fuzzy Levenshtein matching for English; direct substring scan for Khmer |
-| **CAPTCHA Gatekeeper** | Mute on join → inline button → 60 s async expiry timer |
-| **Strike Engine** | 3-tier atomic penalties: warning → 2 h mute → permanent ban |
-| **Link Whitelist** | Hostname extraction with exact & subdomain matching |
-| **Media/Forward Filter** | Block photos, voice, stickers, animations, forwards per group |
-| **Emergency Lock** | `/lock` / `/unlock` instantly toggle chat-wide write permissions |
-| **DM Dashboard** | Interactive 🟢/🔴 toggle panel for admins via private chat |
-| **Audit Logging** | Async channel-based routing to a configurable log channel |
-| **Daily Stats Cron** | 24-hour ticker aggregates and reports per-group metrics |
-
----
-
-## Quick Start
-
-### 1 · Prerequisites
-
-- Go 1.22+
-- A Telegram bot token from [@BotFather](https://t.me/botfather)
-- A [Supabase](https://supabase.com) project (free tier works)
-
-### 2 · Database Setup
-
-Run the migration against your Supabase project:
-
-```bash
-psql "$DATABASE_URL" -f migrations/001_init.sql
-```
-
-Or paste the contents into the Supabase SQL editor.
-
-### 3 · Configuration
+## Run
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in TELEGRAM_BOT_TOKEN and DATABASE_URL
+# edit TELEGRAM_BOT_TOKEN and DATABASE_URL
+go mod tidy
+go test ./...
+go run .
 ```
 
-### 4 · Run Locally
+For Render, set the start command to:
 
 ```bash
-go run ./cmd/bot
+go run .
 ```
 
-### 5 · Docker
+## Database
 
-```bash
-docker build -t telemod .
-docker run --env-file .env telemod
+Run `migrations/0001_init.sql` once in Supabase/Postgres before starting the bot. It is safe for upgrades from the older schema with `block_media`; the migration copies that old value into the new granular media columns.
+
+## Admin commands in groups
+
+- `/settings` opens the inline dashboard in the current group.
+- DM the bot: `/settings <group_chat_id>` to open the same dashboard privately.
+- `/lock` and `/unlock` toggle only `CanSendMessages` while preserving current default chat permissions fetched from Telegram.
+- `/setlog` sets the current group as the moderation audit log channel.
+- `/clearlog` disables audit logging for the group.
+- `/badword add <word>`, `/badword remove <word>`, `/badword list`.
+- `/allowdomain add <domain>`, `/allowdomain remove <domain>`, `/allowdomain list`.
+
+## User commands
+
+- Reply to a message with `/report` to forward it to `LogChannelID` with admin action buttons:
+  - `Ban User`
+  - `Delete & Strike`
+
+## Scheduled task queue
+
+Delayed actions are stored in `scheduled_tasks` and processed by a background worker. This replaces unsafe `time.Sleep` goroutines for:
+
+- CAPTCHA expiry and ban.
+- Delayed message deletion.
+- Mute expiry / unmute.
+
+This lets the bot resume pending moderation actions after a restart.
+
+## Anti-flood
+
+Defaults: more than 5 messages in 3 seconds triggers deletion and a strike. Configure with:
+
+```env
+BOT_FLOOD_LIMIT=5
+BOT_FLOOD_WINDOW=3s
 ```
 
----
+## Daily reports
 
-## Admin Commands
+Daily reports use `github.com/robfig/cron/v3` and UTC by default. Configure with standard 5-field cron syntax:
 
-| Command | Where | Effect |
-|---|---|---|
-| `/lock` | Group (admin) | Disables writing for all members |
-| `/unlock` | Group (admin) | Restores writing permissions |
-| `/settings <chat_id>` | Private DM | Opens interactive settings dashboard |
-
----
-
-## Architecture
-
-```
-[Telegram Update]
-      │
-      ├─ New Member ──► Mute ──► CAPTCHA prompt ──► 60s goroutine timer
-      │
-      └─ Message
-            │
-            ├─ Admin + Command ──► /lock / /unlock
-            │
-            └─ User Message
-                  │
-                  ├─ [Step 1] Forward/Media block check
-                  ├─ [Step 2] Link extraction vs whitelist
-                  └─ [Step 3] Linguistic scanner (EN fuzzy / KM substring)
-                                    │
-                     ┌─────────────┴────────────┐
-                     ▼                           ▼
-               [Passes]                  [Violation]
-                                          │
-                                    DeleteMessage
-                                    go trackMetric()
-                                    go routeAuditLog()
-                                    Strike engine (atomic DB upsert)
+```env
+BOT_DAILY_REPORT_CRON=0 0 * * *
 ```
 
-### Concurrency Model
+## Notes
 
-- Each Telegram update runs in its own goroutine — no update ever blocks another.
-- `sync.Map` provides lock-free reads on the hot path for group configs, bad words, and whitelists.
-- `sync.RWMutex` guards in-place config mutations during dashboard callbacks.
-- Metrics, audit logs, and CAPTCHA timers all run in separate goroutines, keeping the main message loop latency near zero.
-
----
-
-## Running Tests
-
-```bash
-go test ./internal/security/...
-```
-
----
-
-## Environment Variables
-
-| Variable | Description |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
-| `DATABASE_URL` | Supabase PostgreSQL connection string |
-
----
-
-## Deploying on Render
-
-Render Web Services require an open HTTP port. The bot binds a minimal health-check server on the `PORT` environment variable (auto-set by Render, defaults to `8080` locally).
-
-| Endpoint | Response |
-|---|---|
-| `GET /` | `200 ok` |
-| `GET /healthz` | `200 {"status":"ok"}` |
-
-**Steps:**
-
-1. Push the repo to GitHub.
-2. In Render, create a new **Web Service** → **Deploy from Dockerfile**.
-3. Set environment variables: `TELEGRAM_BOT_TOKEN`, `DATABASE_URL`.
-4. Set **Health Check Path** to `/healthz`.
-5. Deploy — the port scan will pass immediately.
-
-> **Alternative:** If you prefer zero HTTP overhead, create a **Background Worker** service instead. Background Workers have no port requirement and no health-check scan.
+When Link Filter is enabled and the whitelist is empty, any detected link is blocked. Add domains with `/allowdomain add example.com`.

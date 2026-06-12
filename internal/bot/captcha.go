@@ -2,22 +2,19 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telemod/internal/models"
 )
 
-// issueCaptcha mutes a new member, sends a verification button, and starts
-// a 60-second expiry timer in a separate goroutine.
 func (b *Bot) issueCaptcha(ctx context.Context, chatID, userID int64, lang string) {
-	// Mute the user immediately.
 	restrict := tgbotapi.RestrictChatMemberConfig{
-		ChatMemberConfig: tgbotapi.ChatMemberConfig{
-			ChatID: chatID,
-			UserID: userID,
-		},
+		ChatMemberConfig: tgbotapi.ChatMemberConfig{ChatID: chatID, UserID: userID},
 		Permissions: &tgbotapi.ChatPermissions{
 			CanSendMessages:       false,
 			CanSendMediaMessages:  false,
@@ -26,104 +23,75 @@ func (b *Bot) issueCaptcha(ctx context.Context, chatID, userID int64, lang strin
 		},
 	}
 	if _, err := b.api.Request(restrict); err != nil {
-		log.Printf("[captcha] restrict %d in %d: %v", userID, chatID, err)
-		// Non-fatal – continue so the user at least sees the prompt.
+		log.Printf("[captcha] restrict user=%d chat=%d: %v", userID, chatID, err)
 	}
 
-	// Send CAPTCHA inline keyboard.
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				T(lang, "captcha_button"),
-				captchaCallbackData(chatID, userID),
-			),
+			tgbotapi.NewInlineKeyboardButtonData(T(lang, "captcha_button"), captchaCallbackData(chatID, userID)),
 		),
 	)
 	msg := tgbotapi.NewMessage(chatID, T(lang, "captcha_prompt"))
 	msg.ReplyMarkup = kb
 	sent, err := b.api.Send(msg)
 	if err != nil {
-		log.Printf("[captcha] send prompt: %v", err)
+		log.Printf("[captcha] send prompt chat=%d user=%d: %v", chatID, userID, err)
 		return
 	}
 
-	// Track in concurrent store.
 	pending := &models.PendingCaptcha{
 		ChatID:    chatID,
 		UserID:    userID,
 		MessageID: sent.MessageID,
-		ExpiresAt: time.Now().Add(60 * time.Second),
+		ExpiresAt: time.Now().Add(b.opts.CaptchaTTL),
 	}
 	b.captchas.Set(pending)
-
-	// Non-blocking expiry worker.
-	go func() {
-		time.Sleep(60 * time.Second)
-		p := b.captchas.Get(chatID, userID)
-		if p == nil {
-			// Already verified – nothing to do.
-			return
-		}
-		b.captchas.Delete(chatID, userID)
-
-		// Delete the CAPTCHA message.
-		b.api.Request(tgbotapi.NewDeleteMessage(chatID, p.MessageID)) //nolint
-
-		// Ban the unverified user.
-		ban := tgbotapi.BanChatMemberConfig{
-			ChatMemberConfig: tgbotapi.ChatMemberConfig{
-				ChatID: chatID,
-				UserID: userID,
-			},
-		}
-		if _, err := b.api.Request(ban); err != nil {
-			log.Printf("[captcha] ban expired user %d: %v", userID, err)
-		}
-
-		// Notify in chat (brief expiry notice).
-		cfg := b.cache.GetGroup(chatID)
-		l := "en"
-		if cfg != nil {
-			l = cfg.Language
-		}
-		note := tgbotapi.NewMessage(chatID, T(l, "captcha_expired"))
-		sent, _ := b.api.Send(note)
-		go func() {
-			time.Sleep(8 * time.Second)
-			b.api.Request(tgbotapi.NewDeleteMessage(chatID, sent.MessageID)) //nolint
-		}()
-	}()
+	b.enqueueCaptchaExpiry(ctx, chatID, userID, sent.MessageID, pending.ExpiresAt)
 }
 
-// handleCallback processes inline button taps including CAPTCHA verification.
 func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
-	if cb.Message == nil || cb.From == nil {
+	if cb == nil || cb.From == nil {
+		return
+	}
+	if cb.Message == nil {
+		answerCallback(b.api, cb.ID, "Unsupported callback.", true)
 		return
 	}
 
-	chatID := cb.Message.Chat.ID
-	userID := cb.From.ID
-
-	if !isCaptchaCallback(cb.Data, chatID, userID) {
-		// Could be a dashboard button – route there.
+	switch {
+	case strings.HasPrefix(cb.Data, "captcha:"):
+		b.handleCaptchaCallback(ctx, cb)
+	case strings.HasPrefix(cb.Data, "dash:"):
 		b.handleDashboardCallback(ctx, cb)
+	case strings.HasPrefix(cb.Data, "report:"):
+		b.handleReportCallback(ctx, cb)
+	default:
+		answerCallback(b.api, cb.ID, "Unknown callback.", true)
+	}
+}
+
+func (b *Bot) handleCaptchaCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
+	chatID, expectedUserID, ok := parseCaptchaCallbackData(cb.Data)
+	if !ok || chatID != cb.Message.Chat.ID {
+		answerCallback(b.api, cb.ID, "Invalid verification button.", true)
+		return
+	}
+	if cb.From.ID != expectedUserID {
+		answerCallback(b.api, cb.ID, "This verification is not for you.", true)
 		return
 	}
 
-	// Verify the user.
-	pending := b.captchas.Get(chatID, userID)
-	if pending == nil {
-		b.api.Request(tgbotapi.NewCallback(cb.ID, "Already verified or expired.")) //nolint
+	messageID := cb.Message.MessageID
+	pending := b.captchas.Get(chatID, expectedUserID)
+	cancelledPersistentTask := b.cancelCaptchaExpiry(ctx, chatID, expectedUserID, messageID)
+	if pending == nil && !cancelledPersistentTask {
+		answerCallback(b.api, cb.ID, "Already verified or expired.", false)
 		return
 	}
-	b.captchas.Delete(chatID, userID)
+	b.captchas.Delete(chatID, expectedUserID)
 
-	// Restore permissions.
 	restore := tgbotapi.RestrictChatMemberConfig{
-		ChatMemberConfig: tgbotapi.ChatMemberConfig{
-			ChatID: chatID,
-			UserID: userID,
-		},
+		ChatMemberConfig: tgbotapi.ChatMemberConfig{ChatID: chatID, UserID: expectedUserID},
 		Permissions: &tgbotapi.ChatPermissions{
 			CanSendMessages:       true,
 			CanSendMediaMessages:  true,
@@ -132,33 +100,35 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		},
 	}
 	if _, err := b.api.Request(restore); err != nil {
-		log.Printf("[captcha] restore %d: %v", userID, err)
+		log.Printf("[captcha] restore user=%d chat=%d: %v", expectedUserID, chatID, err)
 	}
 
-	// Edit the CAPTCHA message to a success notice.
 	cfg := b.cache.GetGroup(chatID)
-	l := "en"
-	if cfg != nil {
-		l = cfg.Language
+	lang := "en"
+	if cfg != nil && cfg.Language != "" {
+		lang = cfg.Language
 	}
-	edit := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, T(l, "captcha_verified"))
-	b.api.Send(edit) //nolint
-	b.api.Request(tgbotapi.NewCallback(cb.ID, "")) //nolint
-
-	// Auto-delete success message after 5 s.
-	go func() {
-		time.Sleep(5 * time.Second)
-		b.api.Request(tgbotapi.NewDeleteMessage(chatID, cb.Message.MessageID)) //nolint
-	}()
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, T(lang, "captcha_verified"))
+	if _, err := b.api.Request(edit); err != nil {
+		log.Printf("[captcha] edit verified msg=%d: %v", messageID, err)
+	}
+	answerCallback(b.api, cb.ID, "", false)
+	b.enqueueDeleteMessage(ctx, chatID, messageID, time.Now().Add(5*time.Second))
 }
 
-// captchaCallbackData encodes a unique callback identifier for a CAPTCHA.
 func captchaCallbackData(chatID, userID int64) string {
-	return "captcha:" + itoa(chatID) + ":" + itoa(userID)
+	return fmt.Sprintf("captcha:%d:%d", chatID, userID)
 }
 
-// isCaptchaCallback checks that the callback data matches the expected format
-// for the given chat/user pair.
-func isCaptchaCallback(data string, chatID, userID int64) bool {
-	return data == captchaCallbackData(chatID, userID)
+func parseCaptchaCallbackData(data string) (int64, int64, bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) != 3 || parts[0] != "captcha" {
+		return 0, 0, false
+	}
+	chatID, err1 := strconv.ParseInt(parts[1], 10, 64)
+	userID, err2 := strconv.ParseInt(parts[2], 10, 64)
+	if err1 != nil || err2 != nil || chatID == 0 || userID == 0 {
+		return 0, 0, false
+	}
+	return chatID, userID, true
 }

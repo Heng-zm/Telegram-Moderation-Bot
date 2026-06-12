@@ -2,20 +2,25 @@ package models
 
 import "time"
 
-// Group represents a multi-tenant Telegram group configuration.
 type Group struct {
-	ChatID         int64     `db:"chat_id"`
-	Language       string    `db:"language"`        // "en" or "km"
-	CaptchaEnabled bool      `db:"captcha_enabled"`
-	LinksEnabled   bool      `db:"links_enabled"`
-	StrikesEnabled bool      `db:"strikes_enabled"`
-	BlockMedia     bool      `db:"block_media"`
-	BlockForwards  bool      `db:"block_forwards"`
-	LogChannelID   int64     `db:"log_channel_id"`
-	CreatedAt      time.Time `db:"created_at"`
+	ChatID          int64     `db:"chat_id"`
+	Language        string    `db:"language"`
+	CaptchaEnabled  bool      `db:"captcha_enabled"`
+	LinksEnabled    bool      `db:"links_enabled"`
+	StrikesEnabled  bool      `db:"strikes_enabled"`
+	BlockPhotos     bool      `db:"block_photos"`
+	BlockVideos     bool      `db:"block_videos"`
+	BlockDocuments  bool      `db:"block_documents"`
+	BlockAudio      bool      `db:"block_audio"`
+	BlockVoice      bool      `db:"block_voice"`
+	BlockStickers   bool      `db:"block_stickers"`
+	BlockAnimations bool      `db:"block_animations"`
+	BlockVideoNotes bool      `db:"block_video_notes"`
+	BlockForwards   bool      `db:"block_forwards"`
+	LogChannelID    int64     `db:"log_channel_id"`
+	CreatedAt       time.Time `db:"created_at"`
 }
 
-// UserStrike tracks how many violations a user has accumulated per group.
 type UserStrike struct {
 	ID        int64     `db:"id"`
 	ChatID    int64     `db:"chat_id"`
@@ -24,16 +29,16 @@ type UserStrike struct {
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
-// GroupStats holds a 24-hour aggregate for a single group.
 type GroupStats struct {
-	ChatID           int64     `db:"chat_id"`
-	RecordDate       time.Time `db:"record_date"`
-	MessagesDeleted  int       `db:"messages_deleted"`
-	SpammersKicked   int       `db:"spammers_kicked"`
-	StrikesIssued    int       `db:"strikes_issued"`
+	ChatID          int64     `db:"chat_id"`
+	RecordDate      time.Time `db:"record_date"`
+	MessagesDeleted int       `db:"messages_deleted"`
+	SpammersKicked  int       `db:"spammers_kicked"`
+	StrikesIssued   int       `db:"strikes_issued"`
+	Language        string    `db:"language"`
+	LogChannelID    int64     `db:"log_channel_id"`
 }
 
-// AuditEvent is the payload routed to the async log channel.
 type AuditEvent struct {
 	ChatID    int64
 	UserID    int64
@@ -43,7 +48,6 @@ type AuditEvent struct {
 	Timestamp time.Time
 }
 
-// PendingCaptcha tracks a user awaiting CAPTCHA verification.
 type PendingCaptcha struct {
 	ChatID    int64
 	UserID    int64
@@ -51,7 +55,53 @@ type PendingCaptcha struct {
 	ExpiresAt time.Time
 }
 
-// ViolationType is an enum for the type of rule broken.
+type ScheduledTaskType string
+
+const (
+	TaskCaptchaExpire ScheduledTaskType = "captcha_expire"
+	TaskDeleteMessage ScheduledTaskType = "delete_message"
+	TaskUnmuteUser    ScheduledTaskType = "unmute_user"
+)
+
+type ScheduledTaskStatus string
+
+const (
+	TaskStatusPending   ScheduledTaskStatus = "pending"
+	TaskStatusRunning   ScheduledTaskStatus = "running"
+	TaskStatusDone      ScheduledTaskStatus = "done"
+	TaskStatusFailed    ScheduledTaskStatus = "failed"
+	TaskStatusCancelled ScheduledTaskStatus = "cancelled"
+)
+
+type ScheduledTask struct {
+	ID        int64
+	Type      ScheduledTaskType
+	DedupKey  string
+	Payload   []byte
+	RunAt     time.Time
+	Status    ScheduledTaskStatus
+	Attempts  int
+	LastError string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type CaptchaExpirePayload struct {
+	ChatID    int64 `json:"chat_id"`
+	UserID    int64 `json:"user_id"`
+	MessageID int   `json:"message_id"`
+}
+
+type DeleteMessagePayload struct {
+	ChatID    int64 `json:"chat_id"`
+	MessageID int   `json:"message_id"`
+}
+
+type UnmuteUserPayload struct {
+	ChatID int64 `json:"chat_id"`
+	UserID int64 `json:"user_id"`
+}
+
 type ViolationType int
 
 const (
@@ -59,6 +109,7 @@ const (
 	ViolationLink
 	ViolationMedia
 	ViolationForward
+	ViolationFlood
 )
 
 func (v ViolationType) String() string {
@@ -71,6 +122,8 @@ func (v ViolationType) String() string {
 		return "blocked_media"
 	case ViolationForward:
 		return "blocked_forward"
+	case ViolationFlood:
+		return "anti_flood"
 	default:
 		return "unknown"
 	}

@@ -2,56 +2,120 @@ package bot
 
 import (
 	"context"
+	"html"
 	"log"
+	"strconv"
+	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telemod/internal/models"
 )
 
-// isAdmin queries the Telegram API to check whether userID is a group admin.
-// Errors (e.g. bot not in group) are treated as non-admin.
 func (b *Bot) isAdmin(ctx context.Context, chatID, userID int64) bool {
-	cm, err := b.api.GetChatMember(tgbotapi.GetChatMemberConfig{
-		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
-			ChatID: chatID,
-			UserID: userID,
-		},
-	})
-	if err != nil {
+	if chatID == 0 || userID == 0 {
 		return false
 	}
-	return cm.IsAdministrator() || cm.IsCreator()
+	if allowed, ok := b.adminCache.Get(chatID, userID); ok {
+		return allowed
+	}
+	cm, err := b.api.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: chatID, UserID: userID},
+	})
+	if err != nil {
+		log.Printf("[admin] check chat=%d user=%d: %v", chatID, userID, err)
+		b.adminCache.Set(chatID, userID, false)
+		return false
+	}
+	allowed := cm.IsAdministrator() || cm.IsCreator()
+	b.adminCache.Set(chatID, userID, allowed)
+	return allowed
 }
 
-// ensureGroup returns the group config from cache, falling back to the DB
-// and then creating a default record for first-time groups.
 func (b *Bot) ensureGroup(ctx context.Context, chatID int64) (*models.Group, error) {
 	if cfg := b.cache.GetGroup(chatID); cfg != nil {
 		return cfg, nil
 	}
-
 	cfg, err := b.store.GetOrCreateGroup(ctx, chatID)
 	if err != nil {
 		return nil, err
 	}
 	b.cache.SetGroup(cfg)
+	b.warmGroupLists(chatID)
+	return cfg, nil
+}
 
-	// Warm up bad words and whitelist caches in the background.
+func (b *Bot) warmGroupLists(chatID int64) {
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
 		bw, err := b.store.GetBadWords(ctx, chatID)
 		if err != nil {
 			log.Printf("[cache] warm bad words %d: %v", chatID, err)
-			return
+		} else {
+			b.cache.SetBadWords(chatID, bw)
 		}
-		b.cache.SetBadWords(chatID, bw)
 
 		wl, err := b.store.GetWhitelist(ctx, chatID)
 		if err != nil {
 			log.Printf("[cache] warm whitelist %d: %v", chatID, err)
-			return
+		} else {
+			b.cache.SetWhitelist(chatID, wl)
 		}
-		b.cache.SetWhitelist(chatID, wl)
 	}()
+}
 
-	return cfg, nil
+func sendText(api *tgbotapi.BotAPI, chatID int64, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if _, err := api.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
+		log.Printf("[telegram] send chat=%d: %v", chatID, err)
+	}
+}
+
+func sendHTML(api *tgbotapi.BotAPI, chatID int64, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = tgbotapi.ModeHTML
+	if _, err := api.Send(msg); err != nil {
+		log.Printf("[telegram] send html chat=%d: %v", chatID, err)
+	}
+}
+
+func answerCallback(api *tgbotapi.BotAPI, callbackID, text string, alert bool) {
+	if callbackID == "" {
+		return
+	}
+	cfg := tgbotapi.CallbackConfig{CallbackQueryID: callbackID, Text: text, ShowAlert: alert}
+	if _, err := api.Request(cfg); err != nil {
+		log.Printf("[telegram] answer callback: %v", err)
+	}
+}
+
+func messageContent(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	parts := []string{msg.Text, msg.Caption}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func escapeHTML(s string) string { return html.EscapeString(s) }
+
+func displayName(user *tgbotapi.User) string {
+	if user == nil {
+		return ""
+	}
+	if user.UserName != "" {
+		return "@" + user.UserName
+	}
+	name := strings.TrimSpace(strings.Join([]string{user.FirstName, user.LastName}, " "))
+	if name != "" {
+		return name
+	}
+	return strconv.FormatInt(user.ID, 10)
 }
