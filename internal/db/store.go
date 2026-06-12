@@ -540,7 +540,7 @@ func (s *Store) FailTask(ctx context.Context, id int64, attempts int, lastErr st
 	}
 	const q = `
 		UPDATE scheduled_tasks
-		SET status = 'pending', run_at = NOW() + make_interval(secs => $2::double precision), last_error = $3, updated_at = NOW()
+		SET status = 'pending', run_at = NOW() + ($2::int * INTERVAL '1 second'), last_error = $3, updated_at = NOW()
 		WHERE id = $1`
 	_, err := s.pool.Exec(ctx, q, id, int(retryAfter.Seconds()), lastErr)
 	if err != nil {

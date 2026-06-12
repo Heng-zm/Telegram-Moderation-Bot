@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -45,7 +46,7 @@ func (b *Bot) processDueTasks(ctx context.Context) {
 			continue
 		}
 		jobCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := b.executeScheduledTask(jobCtx, task)
+		err := b.executeScheduledTaskSafe(jobCtx, task)
 		cancel()
 
 		persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -59,6 +60,15 @@ func (b *Bot) processDueTasks(ctx context.Context) {
 		}
 		persistCancel()
 	}
+}
+
+func (b *Bot) executeScheduledTaskSafe(ctx context.Context, task *models.ScheduledTask) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic while executing scheduled task id=%d type=%s: %v", task.ID, task.Type, r)
+		}
+	}()
+	return b.executeScheduledTask(ctx, task)
 }
 
 func (b *Bot) executeScheduledTask(ctx context.Context, task *models.ScheduledTask) error {
@@ -87,16 +97,28 @@ func (b *Bot) executeScheduledTask(ctx context.Context, task *models.ScheduledTa
 }
 
 func (b *Bot) executeCaptchaExpireTask(ctx context.Context, payload models.CaptchaExpirePayload) error {
-	b.captchas.Delete(payload.ChatID, payload.UserID)
+	if payload.ChatID == 0 || payload.UserID == 0 {
+		return nil
+	}
+
+	if current := b.captchas.Get(payload.ChatID, payload.UserID); current != nil && current.MessageID != payload.MessageID {
+		log.Printf("[captcha] skip stale expiry chat=%d user=%d old_msg=%d current_msg=%d", payload.ChatID, payload.UserID, payload.MessageID, current.MessageID)
+		return nil
+	}
+	b.captchas.DeleteIfMessageID(payload.ChatID, payload.UserID, payload.MessageID)
 
 	if payload.MessageID != 0 {
-		if _, err := b.api.Request(tgbotapi.NewDeleteMessage(payload.ChatID, payload.MessageID)); err != nil {
-			log.Printf("[captcha] delete expired prompt chat=%d msg=%d: %v", payload.ChatID, payload.MessageID, err)
+		if _, err := b.api.Request(tgbotapi.NewDeleteMessage(payload.ChatID, payload.MessageID)); err != nil && !isNonRetryableTelegramError(err) {
+			return fmt.Errorf("delete expired captcha prompt chat=%d msg=%d: %w", payload.ChatID, payload.MessageID, err)
 		}
 	}
 
 	ban := tgbotapi.BanChatMemberConfig{ChatMemberConfig: tgbotapi.ChatMemberConfig{ChatID: payload.ChatID, UserID: payload.UserID}}
 	if _, err := b.api.Request(ban); err != nil {
+		if isNonRetryableTelegramError(err) {
+			log.Printf("[captcha] non-retryable ban failure chat=%d user=%d: %v", payload.ChatID, payload.UserID, err)
+			return nil
+		}
 		return fmt.Errorf("ban expired captcha user=%d chat=%d: %w", payload.UserID, payload.ChatID, err)
 	}
 
@@ -114,6 +136,10 @@ func (b *Bot) executeCaptchaExpireTask(ctx context.Context, payload models.Captc
 	}
 	note, err := b.api.Send(tgbotapi.NewMessage(payload.ChatID, T(lang, "captcha_expired")))
 	if err != nil {
+		if isNonRetryableTelegramError(err) {
+			log.Printf("[captcha] non-retryable expiry notice failure chat=%d user=%d: %v", payload.ChatID, payload.UserID, err)
+			return nil
+		}
 		return fmt.Errorf("send captcha expiry notice: %w", err)
 	}
 	b.enqueueDeleteMessage(ctx, payload.ChatID, note.MessageID, time.Now().Add(b.opts.CaptchaNoticeTTL))
@@ -126,6 +152,10 @@ func (b *Bot) executeDeleteMessageTask(ctx context.Context, payload models.Delet
 		return nil
 	}
 	if _, err := b.api.Request(tgbotapi.NewDeleteMessage(payload.ChatID, payload.MessageID)); err != nil {
+		if isNonRetryableTelegramError(err) {
+			log.Printf("[tasks] non-retryable delete failure chat=%d msg=%d: %v", payload.ChatID, payload.MessageID, err)
+			return nil
+		}
 		return fmt.Errorf("delete message chat=%d msg=%d: %w", payload.ChatID, payload.MessageID, err)
 	}
 	return nil
@@ -146,6 +176,10 @@ func (b *Bot) executeUnmuteUserTask(ctx context.Context, payload models.UnmuteUs
 		},
 	}
 	if _, err := b.api.Request(restore); err != nil {
+		if isNonRetryableTelegramError(err) {
+			log.Printf("[tasks] non-retryable unmute failure chat=%d user=%d: %v", payload.ChatID, payload.UserID, err)
+			return nil
+		}
 		return fmt.Errorf("unmute user=%d chat=%d: %w", payload.UserID, payload.ChatID, err)
 	}
 	return nil
@@ -153,7 +187,7 @@ func (b *Bot) executeUnmuteUserTask(ctx context.Context, payload models.UnmuteUs
 
 func (b *Bot) enqueueCaptchaExpiry(ctx context.Context, chatID, userID int64, messageID int, expiresAt time.Time) {
 	payload := models.CaptchaExpirePayload{ChatID: chatID, UserID: userID, MessageID: messageID}
-	if _, err := b.store.EnqueueTask(ctx, models.TaskCaptchaExpire, captchaTaskKey(chatID, userID, messageID), payload, expiresAt); err != nil {
+	if _, err := b.store.EnqueueTask(ctx, models.TaskCaptchaExpire, captchaTaskKey(chatID, userID), payload, expiresAt); err != nil {
 		log.Printf("[tasks] enqueue captcha expiry chat=%d user=%d msg=%d: %v", chatID, userID, messageID, err)
 	}
 }
@@ -179,15 +213,15 @@ func (b *Bot) enqueueUnmuteUser(ctx context.Context, chatID, userID int64, runAt
 }
 
 func (b *Bot) cancelCaptchaExpiry(ctx context.Context, chatID, userID int64, messageID int) bool {
-	ok, err := b.store.CancelTaskByDedupKey(ctx, captchaTaskKey(chatID, userID, messageID))
+	ok, err := b.store.CancelTaskByDedupKey(ctx, captchaTaskKey(chatID, userID))
 	if err != nil {
 		log.Printf("[tasks] cancel captcha expiry chat=%d user=%d msg=%d: %v", chatID, userID, messageID, err)
 	}
 	return ok
 }
 
-func captchaTaskKey(chatID, userID int64, messageID int) string {
-	return fmt.Sprintf("captcha:%d:%d:%d", chatID, userID, messageID)
+func captchaTaskKey(chatID, userID int64) string {
+	return fmt.Sprintf("captcha:%d:%d", chatID, userID)
 }
 
 func deleteTaskKey(chatID int64, messageID int) string {
@@ -196,6 +230,31 @@ func deleteTaskKey(chatID int64, messageID int) string {
 
 func unmuteTaskKey(chatID, userID int64) string {
 	return fmt.Sprintf("unmute:%d:%d", chatID, userID)
+}
+
+func isNonRetryableTelegramError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	patterns := []string{
+		"message to delete not found",
+		"message can't be deleted",
+		"message identifier is not specified",
+		"message is not modified",
+		"chat not found",
+		"user not found",
+		"bot was kicked",
+		"not enough rights",
+		"have no rights",
+		"user is an administrator",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func retryAfter(attempts int) time.Duration {

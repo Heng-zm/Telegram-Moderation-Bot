@@ -10,3 +10,9 @@ services:
         sync: false        # set manually in Render dashboard
       - key: DATABASE_URL
         sync: false        # set manually in Render dashboard
+      - key: BOT_UPDATE_WORKERS
+        value: "32"
+      - key: BOT_METRIC_QUEUE_SIZE
+        value: "2048"
+      - key: BOT_DAILY_REPORT_CRON
+        value: "0 0 * * *"

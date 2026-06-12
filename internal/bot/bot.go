@@ -22,6 +22,7 @@ type Options struct {
 	UpdateWorkers    int
 	UpdateQueueSize  int
 	AuditQueueSize   int
+	MetricQueueSize  int
 	AdminCacheTTL    time.Duration
 	CaptchaTTL       time.Duration
 	CaptchaNoticeTTL time.Duration
@@ -43,6 +44,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.AuditQueueSize <= 0 {
 		o.AuditQueueSize = 1024
+	}
+	if o.MetricQueueSize <= 0 {
+		o.MetricQueueSize = 2048
 	}
 	if o.AdminCacheTTL <= 0 {
 		o.AdminCacheTTL = 5 * time.Minute
@@ -83,8 +87,9 @@ type Bot struct {
 	cache    *cache.GroupCache
 	captchas *cache.CaptchaStore
 
-	auditCh chan *models.AuditEvent
-	updates chan tgbotapi.Update
+	auditCh  chan *models.AuditEvent
+	metricCh chan *models.MetricEvent
+	updates  chan tgbotapi.Update
 
 	adminCache   *cache.AdminCache
 	floodLimiter *cache.FloodLimiter
@@ -93,6 +98,8 @@ type Bot struct {
 
 	processedUpdates uint64
 	droppedAudits    uint64
+	droppedMetrics   uint64
+	processedMetrics uint64
 }
 
 func New(token string, store *db.Store, opts Options) (*Bot, error) {
@@ -108,6 +115,7 @@ func New(token string, store *db.Store, opts Options) (*Bot, error) {
 		cache:        cache.NewGroupCache(),
 		captchas:     cache.NewCaptchaStore(),
 		auditCh:      make(chan *models.AuditEvent, opts.AuditQueueSize),
+		metricCh:     make(chan *models.MetricEvent, opts.MetricQueueSize),
 		updates:      make(chan tgbotapi.Update, opts.UpdateQueueSize),
 		adminCache:   cache.NewAdminCache(opts.AdminCacheTTL),
 		floodLimiter: cache.NewFloodLimiter(opts.FloodLimit, opts.FloodWindow),
@@ -123,6 +131,7 @@ func (b *Bot) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	b.safeWorker(ctx, &wg, "audit-log", b.auditLogWorker)
+	b.safeWorker(ctx, &wg, "metrics", b.metricWorker)
 	b.safeWorker(ctx, &wg, "scheduled-task-queue", b.scheduledTaskWorker)
 	b.safeWorker(ctx, &wg, "flood-cleanup", b.floodCleanupWorker)
 
@@ -161,9 +170,10 @@ func (b *Bot) Run(ctx context.Context) error {
 			return nil
 		case update, ok := <-updates:
 			if !ok {
+				cancel()
 				close(b.updates)
 				wg.Wait()
-				return nil
+				return fmt.Errorf("telegram updates channel closed")
 			}
 			select {
 			case b.updates <- update:
@@ -245,6 +255,39 @@ func (b *Bot) auditLogWorker(ctx context.Context) {
 	}
 }
 
+func (b *Bot) metricWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-b.metricCh:
+			if ev == nil || ev.ChatID == 0 || ev.Column == "" {
+				continue
+			}
+			metricCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := b.store.TrackMetric(metricCtx, ev.ChatID, ev.Column); err != nil {
+				log.Printf("[metric] %s chat=%d: %v", ev.Column, ev.ChatID, err)
+			} else {
+				atomic.AddUint64(&b.processedMetrics, 1)
+			}
+			cancel()
+		}
+	}
+}
+
+func (b *Bot) trackMetricAsync(chatID int64, column string) {
+	if chatID == 0 || column == "" {
+		return
+	}
+	ev := &models.MetricEvent{ChatID: chatID, Column: column}
+	select {
+	case b.metricCh <- ev:
+	default:
+		atomic.AddUint64(&b.droppedMetrics, 1)
+		log.Printf("[metric] channel full; dropping %s for chat %d", column, chatID)
+	}
+}
+
 func (b *Bot) floodCleanupWorker(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -300,8 +343,12 @@ func (b *Bot) HealthSnapshot() map[string]any {
 		"update_queue_cap":  cap(b.updates),
 		"audit_queue_len":   len(b.auditCh),
 		"audit_queue_cap":   cap(b.auditCh),
+		"metric_queue_len":  len(b.metricCh),
+		"metric_queue_cap":  cap(b.metricCh),
 		"processed_updates": atomic.LoadUint64(&b.processedUpdates),
+		"processed_metrics": atomic.LoadUint64(&b.processedMetrics),
 		"dropped_audits":    atomic.LoadUint64(&b.droppedAudits),
+		"dropped_metrics":   atomic.LoadUint64(&b.droppedMetrics),
 		"daily_report_cron": b.opts.DailyReportCron,
 		"flood_limit":       b.opts.FloodLimit,
 		"flood_window":      b.opts.FloodWindow.String(),

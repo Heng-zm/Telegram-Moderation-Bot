@@ -39,6 +39,13 @@ type GroupStats struct {
 	LogChannelID    int64     `db:"log_channel_id"`
 }
 
+// MetricEvent is queued by hot moderation paths so DB writes do not spawn
+// unbounded goroutines or block Telegram update workers.
+type MetricEvent struct {
+	ChatID int64
+	Column string
+}
+
 type AuditEvent struct {
 	ChatID    int64
 	UserID    int64

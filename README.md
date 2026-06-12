@@ -9,13 +9,13 @@ cp .env.example .env
 # edit TELEGRAM_BOT_TOKEN and DATABASE_URL
 go mod tidy
 go test ./...
-go run .
+go run ./cmd/telemod
 ```
 
 For Render, set the start command to:
 
 ```bash
-go run .
+go run ./cmd/telemod
 ```
 
 ## Database
@@ -68,3 +68,11 @@ BOT_DAILY_REPORT_CRON=0 0 * * *
 ## Notes
 
 When Link Filter is enabled and the whitelist is empty, any detected link is blocked. Add domains with `/allowdomain add example.com`.
+
+## Latest production fixes
+
+- Docker and setup scripts now build `./cmd/telemod` instead of the old non-existent `./cmd/bot` path.
+- Hot-path metric writes now use a bounded worker queue (`BOT_METRIC_QUEUE_SIZE`) instead of spawning DB goroutines per violation.
+- CAPTCHA task deduplication is now per chat/user, so re-issued CAPTCHA prompts replace stale pending expiry tasks.
+- Scheduled task execution now catches panics per task and marks the task failed/retryable instead of killing the worker.
+- Non-retryable Telegram errors such as missing messages, kicked bot, or missing rights are treated as completed tasks to prevent an endless retry queue.

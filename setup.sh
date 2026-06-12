@@ -1,10 +1,14 @@
 #!/usr/bin/env sh
-# Run this once after cloning to generate go.sum before building.
-# Requires Go 1.22+ to be installed locally.
+# Run this once after cloning to verify modules and tests.
+# Requires Go 1.23+.
 set -e
-echo "→ Running go mod tidy to generate go.sum..."
+
+echo "→ Tidying Go modules..."
 go mod tidy
-echo "✅ go.sum generated. You can now run:"
+
+echo "→ Running tests..."
+go test ./...
+
+echo "✅ Ready. Useful commands:"
+echo "   go run ./cmd/telemod"
 echo "   docker build -t telemod ."
-echo "   # or"
-echo "   go run ./cmd/bot"

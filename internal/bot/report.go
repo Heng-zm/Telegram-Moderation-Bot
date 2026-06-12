@@ -6,7 +6,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telemod/internal/models"
@@ -32,6 +31,10 @@ func (b *Bot) handleReportCommand(ctx context.Context, msg *tgbotapi.Message, cf
 
 	offender := msg.ReplyToMessage.From
 	reporter := msg.From
+	if reporter == nil {
+		sendText(b.api, msg.Chat.ID, T(cfg.Language, "report_no_user"))
+		return true
+	}
 	fwd := tgbotapi.NewForward(cfg.LogChannelID, msg.Chat.ID, msg.ReplyToMessage.MessageID)
 	forwarded, err := b.api.Send(fwd)
 	if err != nil {
@@ -92,13 +95,7 @@ func (b *Bot) handleReportCallback(ctx context.Context, cb *tgbotapi.CallbackQue
 			answerCallback(b.api, cb.ID, "Ban failed.", true)
 			return
 		}
-		go func() {
-			metricCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := b.store.TrackMetric(metricCtx, chatID, "spammers_kicked"); err != nil {
-				log.Printf("[metric] spammers_kicked: %v", err)
-			}
-		}()
+		b.trackMetricAsync(chatID, "spammers_kicked")
 		b.editReportActionMessage(cb, fmt.Sprintf("✅ User <code>%d</code> banned by <code>%s</code>.", offenderID, escapeHTML(displayName(cb.From))))
 		answerCallback(b.api, cb.ID, "Banned.", false)
 	case "strike":

@@ -103,13 +103,7 @@ func (b *Bot) deleteAndTrack(ctx context.Context, metricChatID, telegramChatID i
 		log.Printf("[security] delete msg=%d chat=%d: %v", messageID, telegramChatID, err)
 	}
 
-	go func(chatID int64) {
-		metricCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := b.store.TrackMetric(metricCtx, chatID, "messages_deleted"); err != nil {
-			log.Printf("[metric] messages_deleted: %v", err)
-		}
-	}(metricChatID)
+	b.trackMetricAsync(metricChatID, "messages_deleted")
 }
 
 func (b *Bot) auditViolation(chatID, userID int64, username, content, reason string) {
@@ -165,13 +159,7 @@ func (b *Bot) issueStrike(ctx context.Context, chatID, userID int64, username, l
 		return
 	}
 
-	go func(chatID int64) {
-		metricCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := b.store.TrackMetric(metricCtx, chatID, "strikes_issued"); err != nil {
-			log.Printf("[metric] strikes_issued: %v", err)
-		}
-	}(chatID)
+	b.trackMetricAsync(chatID, "strikes_issued")
 
 	if lang == "" {
 		lang = "en"
@@ -210,10 +198,8 @@ func (b *Bot) issueStrike(ctx context.Context, chatID, userID int64, username, l
 			if err := b.store.DeleteUserStrike(cleanupCtx, chatID, userID); err != nil {
 				log.Printf("[strike] delete records: %v", err)
 			}
-			if err := b.store.TrackMetric(cleanupCtx, chatID, "spammers_kicked"); err != nil {
-				log.Printf("[metric] spammers_kicked: %v", err)
-			}
 		}(chatID, userID)
+		b.trackMetricAsync(chatID, "spammers_kicked")
 		sendText(b.api, chatID, T(lang, "strike3"))
 	}
 }
