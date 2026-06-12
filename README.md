@@ -120,3 +120,24 @@ go test ./internal/security/...
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
 | `DATABASE_URL` | Supabase PostgreSQL connection string |
+
+---
+
+## Deploying on Render
+
+Render Web Services require an open HTTP port. The bot binds a minimal health-check server on the `PORT` environment variable (auto-set by Render, defaults to `8080` locally).
+
+| Endpoint | Response |
+|---|---|
+| `GET /` | `200 ok` |
+| `GET /healthz` | `200 {"status":"ok"}` |
+
+**Steps:**
+
+1. Push the repo to GitHub.
+2. In Render, create a new **Web Service** → **Deploy from Dockerfile**.
+3. Set environment variables: `TELEGRAM_BOT_TOKEN`, `DATABASE_URL`.
+4. Set **Health Check Path** to `/healthz`.
+5. Deploy — the port scan will pass immediately.
+
+> **Alternative:** If you prefer zero HTTP overhead, create a **Background Worker** service instead. Background Workers have no port requirement and no health-check scan.

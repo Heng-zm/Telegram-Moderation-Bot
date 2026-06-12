@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,8 +36,44 @@ func main() {
 		log.Fatalf("bot: %v", err)
 	}
 
+	// Start a minimal HTTP health-check server so Render's port scan
+	// succeeds when deployed as a Web Service.
+	// PORT is set automatically by Render; fall back to 8080 locally.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	startHealthServer(port)
+
 	b.Run(ctx)
 	log.Println("[main] shutdown complete")
+}
+
+// startHealthServer launches a tiny HTTP server in the background.
+// GET /healthz → 200 OK   (Render health-check endpoint)
+// GET /         → 200 OK   (satisfies the initial port scan)
+func startHealthServer(port string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
+	})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"status":"ok"}`)
+	})
+
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("[health] listening on :%s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[health] server error: %v", err)
+		}
+	}()
 }
 
 func mustEnv(key string) string {

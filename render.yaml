@@ -1,0 +1,12 @@
+# Render deployment configuration
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: telemod-bot
+    runtime: docker
+    healthCheckPath: /healthz
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false        # set manually in Render dashboard
+      - key: DATABASE_URL
+        sync: false        # set manually in Render dashboard
