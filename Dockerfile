@@ -3,12 +3,12 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /src
 
-# Cache dependency downloads first.
+# Cache dependency downloads first. go.mod already includes required indirect deps.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download && go mod verify
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /telemod ./cmd/telemod
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=readonly -trimpath -ldflags="-s -w" -o /telemod ./cmd/telemod
 
 # ── Runtime stage ─────────────────────────────────────────────
 FROM alpine:3.20

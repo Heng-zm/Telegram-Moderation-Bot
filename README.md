@@ -2,6 +2,17 @@
 
 Production-ready Go Telegram moderation bot with bounded update workers, admin dashboard, CAPTCHA, link filtering, bad-word scanning, strike penalties, audit logs, DB-backed scheduled tasks, anti-flood detection, granular media filters, user reports, and cron-based daily reports.
 
+
+## Docker build fix
+
+This version includes the required indirect Go modules in `go.mod` so Docker can build with `-mod=readonly`. If you add or remove imports later, run:
+
+```bash
+go mod tidy
+go test ./...
+docker build -t telemod .
+```
+
 ## Run
 
 ```bash
