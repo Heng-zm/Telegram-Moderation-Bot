@@ -44,6 +44,15 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cfg
 	}
 }
 
+func isGroupOwnerCommand(command string) bool {
+	switch command {
+	case "settings", "lock", "unlock", "setlog", "clearlog", "badword", "allowdomain", "allow":
+		return true
+	default:
+		return false
+	}
+}
+
 func (b *Bot) setGroupLock(ctx context.Context, chatID int64, lang string, allow bool) {
 	chat, err := b.api.GetChat(tgbotapi.ChatInfoConfig{ChatConfig: tgbotapi.ChatConfig{ChatID: chatID}})
 	if err != nil {
@@ -87,8 +96,8 @@ func (b *Bot) handleDM(ctx context.Context, msg *tgbotapi.Message) {
 		sendText(b.api, msg.Chat.ID, T("en", "settings_usage"))
 		return
 	}
-	if !b.isAdmin(ctx, groupChatID, msg.From.ID) {
-		sendText(b.api, msg.Chat.ID, T("en", "not_group_admin"))
+	if !b.canManageGroupSettings(ctx, groupChatID, msg.From.ID) {
+		sendText(b.api, msg.Chat.ID, T("en", "not_group_owner"))
 		return
 	}
 	cfg, err := b.ensureGroup(ctx, groupChatID)
@@ -161,8 +170,8 @@ func (b *Bot) handleDashboardCallback(ctx context.Context, cb *tgbotapi.Callback
 		answerCallback(b.api, cb.ID, "Invalid group id.", true)
 		return
 	}
-	if !b.isAdmin(ctx, groupChatID, cb.From.ID) {
-		answerCallback(b.api, cb.ID, T("en", "not_group_admin"), true)
+	if !b.canManageGroupSettings(ctx, groupChatID, cb.From.ID) {
+		answerCallback(b.api, cb.ID, T("en", "not_group_owner"), true)
 		return
 	}
 

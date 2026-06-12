@@ -53,7 +53,49 @@ func New(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("db: ping: %w", err)
 	}
-	return &Store{pool: pool}, nil
+
+	store := &Store{pool: pool}
+	if err := store.EnsureScheduledTaskSchema(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// EnsureScheduledTaskSchema creates the DB-backed task queue table required by
+// the bot's restart-safe CAPTCHA, delete-message, and unmute workers.
+//
+// This is intentionally narrow and idempotent. It fixes deployments that were
+// upgraded from the older schema without running the latest migration, while
+// avoiding destructive changes to existing moderation tables.
+func (s *Store) EnsureScheduledTaskSchema(ctx context.Context) error {
+	if s == nil || s.pool == nil {
+		return fmt.Errorf("db: ensure scheduled_tasks: store is closed")
+	}
+
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS scheduled_tasks (
+			id BIGSERIAL PRIMARY KEY,
+			task_type TEXT NOT NULL CHECK (task_type IN ('captcha_expire', 'delete_message', 'unmute_user')),
+			dedup_key TEXT UNIQUE,
+			payload JSONB NOT NULL,
+			run_at TIMESTAMPTZ NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed', 'cancelled')),
+			attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due ON scheduled_tasks (status, run_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_type ON scheduled_tasks (task_type, status)`,
+	}
+
+	for _, q := range statements {
+		if _, err := s.pool.Exec(ctx, q); err != nil {
+			return fmt.Errorf("db: ensure scheduled_tasks schema: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() {

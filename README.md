@@ -13,6 +13,42 @@ go test ./...
 docker build -t telemod .
 ```
 
+
+## Role separation
+
+This build separates bot-level ownership from group/channel ownership.
+
+### Bot Owner / Bot Admin
+
+Set bot owners by Telegram numeric user ID:
+
+```env
+BOT_OWNER_IDS=123456789,987654321
+BOT_OWNER_CAN_MANAGE_GROUPS=false
+```
+
+Bot owners can DM the bot:
+
+- `/admin` or `/botadmin` — open the bot service dashboard.
+- `/groups` — list registered groups/channels known by the bot.
+- `/whoami` — show your Telegram ID and bot-owner status.
+
+By default, bot owners cannot change a customer group/channel configuration unless they are also the Telegram creator/owner of that chat. Set `BOT_OWNER_CAN_MANAGE_GROUPS=true` only when you intentionally want emergency support override.
+
+### Group/Channel Owner
+
+The Telegram creator/owner of a group/channel controls that chat only. Group/channel owner commands:
+
+- `/settings`
+- `/lock` / `/unlock`
+- `/setlog` / `/clearlog`
+- `/badword ...`
+- `/allowdomain ...`
+
+Normal Telegram admins can still handle moderation report buttons such as `Ban User` and `Delete & Strike`, but they cannot change bot settings unless they are the Telegram creator/owner.
+
+Use `/whoami` in a group to confirm whether the bot sees you as `owner`, `admin`, or `member`.
+
 ## Run
 
 ```bash
@@ -33,9 +69,11 @@ go run ./cmd/telemod
 
 Run `migrations/0001_init.sql` once in Supabase/Postgres before starting the bot. It is safe for upgrades from the older schema with `block_media`; the migration copies that old value into the new granular media columns.
 
-## Admin commands in groups
+If you upgraded from an older ZIP and see `ERROR: relation "scheduled_tasks" does not exist`, run `migrations/0002_scheduled_tasks.sql`. The app also performs an idempotent startup check that creates only the `scheduled_tasks` queue table/indexes when the DB user has `CREATE TABLE` permission.
 
-- `/settings` opens the inline dashboard in the current group.
+## Group/channel owner commands
+
+- `/settings` opens the inline dashboard in the current group. Only the Telegram group/channel owner can change settings by default.
 - DM the bot: `/settings <group_chat_id>` to open the same dashboard privately.
 - `/lock` and `/unlock` toggle only `CanSendMessages` while preserving current default chat permissions fetched from Telegram.
 - `/setlog` sets the current group as the moderation audit log channel.

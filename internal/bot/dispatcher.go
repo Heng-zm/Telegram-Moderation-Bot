@@ -39,6 +39,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	if msg.Chat.IsPrivate() {
+		if b.handleBotOwnerDM(ctx, msg) {
+			return
+		}
 		b.handleDM(ctx, msg)
 		return
 	}
@@ -55,7 +58,16 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 	}
 
-	if msg.IsCommand() && msg.From != nil && b.isAdmin(ctx, msg.Chat.ID, msg.From.ID) {
+	if msg.IsCommand() && msg.Command() == "whoami" {
+		b.sendWhoAmI(ctx, msg)
+		return
+	}
+
+	if msg.IsCommand() && isGroupOwnerCommand(msg.Command()) {
+		if msg.From == nil || !b.canManageGroupSettings(ctx, msg.Chat.ID, msg.From.ID) {
+			sendText(b.api, msg.Chat.ID, T(cfg.Language, "not_group_owner"))
+			return
+		}
 		if b.handleAdminCommand(ctx, msg, cfg) {
 			return
 		}

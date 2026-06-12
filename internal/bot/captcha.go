@@ -65,6 +65,8 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		b.handleDashboardCallback(ctx, cb)
 	case strings.HasPrefix(cb.Data, "report:"):
 		b.handleReportCallback(ctx, cb)
+	case strings.HasPrefix(cb.Data, "botadmin:"):
+		b.handleBotAdminCallback(ctx, cb)
 	default:
 		answerCallback(b.api, cb.ID, "Unknown callback.", true)
 	}

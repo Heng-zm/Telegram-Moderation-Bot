@@ -12,26 +12,6 @@ import (
 	"telemod/internal/models"
 )
 
-func (b *Bot) isAdmin(ctx context.Context, chatID, userID int64) bool {
-	if chatID == 0 || userID == 0 {
-		return false
-	}
-	if allowed, ok := b.adminCache.Get(chatID, userID); ok {
-		return allowed
-	}
-	cm, err := b.api.GetChatMember(tgbotapi.GetChatMemberConfig{
-		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: chatID, UserID: userID},
-	})
-	if err != nil {
-		log.Printf("[admin] check chat=%d user=%d: %v", chatID, userID, err)
-		b.adminCache.Set(chatID, userID, false)
-		return false
-	}
-	allowed := cm.IsAdministrator() || cm.IsCreator()
-	b.adminCache.Set(chatID, userID, allowed)
-	return allowed
-}
-
 func (b *Bot) ensureGroup(ctx context.Context, chatID int64) (*models.Group, error) {
 	if cfg := b.cache.GetGroup(chatID); cfg != nil {
 		return cfg, nil

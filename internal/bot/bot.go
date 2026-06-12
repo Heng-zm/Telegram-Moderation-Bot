@@ -19,20 +19,22 @@ import (
 )
 
 type Options struct {
-	UpdateWorkers    int
-	UpdateQueueSize  int
-	AuditQueueSize   int
-	MetricQueueSize  int
-	AdminCacheTTL    time.Duration
-	CaptchaTTL       time.Duration
-	CaptchaNoticeTTL time.Duration
-	StrikeWarnTTL    time.Duration
-	DailyReportCron  string
-	FloodLimit       int
-	FloodWindow      time.Duration
-	TaskPollInterval time.Duration
-	TaskBatchSize    int
-	TaskMaxAttempts  int
+	BotOwnerIDs             []int64
+	BotOwnerCanManageGroups bool
+	UpdateWorkers           int
+	UpdateQueueSize         int
+	AuditQueueSize          int
+	MetricQueueSize         int
+	AdminCacheTTL           time.Duration
+	CaptchaTTL              time.Duration
+	CaptchaNoticeTTL        time.Duration
+	StrikeWarnTTL           time.Duration
+	DailyReportCron         string
+	FloodLimit              int
+	FloodWindow             time.Duration
+	TaskPollInterval        time.Duration
+	TaskBatchSize           int
+	TaskMaxAttempts         int
 }
 
 func (o Options) withDefaults() Options {
@@ -95,6 +97,7 @@ type Bot struct {
 	floodLimiter *cache.FloodLimiter
 	scheduler    *cron.Cron
 	opts         Options
+	botOwners    map[int64]struct{}
 
 	processedUpdates uint64
 	droppedAudits    uint64
@@ -109,6 +112,13 @@ func New(token string, store *db.Store, opts Options) (*Bot, error) {
 	}
 
 	opts = opts.withDefaults()
+	owners := make(map[int64]struct{}, len(opts.BotOwnerIDs))
+	for _, id := range opts.BotOwnerIDs {
+		if id != 0 {
+			owners[id] = struct{}{}
+		}
+	}
+
 	b := &Bot{
 		api:          api,
 		store:        store,
@@ -121,6 +131,7 @@ func New(token string, store *db.Store, opts Options) (*Bot, error) {
 		floodLimiter: cache.NewFloodLimiter(opts.FloodLimit, opts.FloodWindow),
 		scheduler:    cron.New(cron.WithLocation(time.UTC), cron.WithChain(cron.Recover(cron.DefaultLogger))),
 		opts:         opts,
+		botOwners:    owners,
 	}
 	return b, nil
 }
@@ -337,21 +348,23 @@ func (b *Bot) routeAuditLog(ev *models.AuditEvent) {
 
 func (b *Bot) HealthSnapshot() map[string]any {
 	return map[string]any{
-		"username":          b.api.Self.UserName,
-		"update_workers":    b.opts.UpdateWorkers,
-		"update_queue_len":  len(b.updates),
-		"update_queue_cap":  cap(b.updates),
-		"audit_queue_len":   len(b.auditCh),
-		"audit_queue_cap":   cap(b.auditCh),
-		"metric_queue_len":  len(b.metricCh),
-		"metric_queue_cap":  cap(b.metricCh),
-		"processed_updates": atomic.LoadUint64(&b.processedUpdates),
-		"processed_metrics": atomic.LoadUint64(&b.processedMetrics),
-		"dropped_audits":    atomic.LoadUint64(&b.droppedAudits),
-		"dropped_metrics":   atomic.LoadUint64(&b.droppedMetrics),
-		"daily_report_cron": b.opts.DailyReportCron,
-		"flood_limit":       b.opts.FloodLimit,
-		"flood_window":      b.opts.FloodWindow.String(),
+		"username":                    b.api.Self.UserName,
+		"update_workers":              b.opts.UpdateWorkers,
+		"update_queue_len":            len(b.updates),
+		"update_queue_cap":            cap(b.updates),
+		"audit_queue_len":             len(b.auditCh),
+		"audit_queue_cap":             cap(b.auditCh),
+		"metric_queue_len":            len(b.metricCh),
+		"metric_queue_cap":            cap(b.metricCh),
+		"processed_updates":           atomic.LoadUint64(&b.processedUpdates),
+		"processed_metrics":           atomic.LoadUint64(&b.processedMetrics),
+		"dropped_audits":              atomic.LoadUint64(&b.droppedAudits),
+		"dropped_metrics":             atomic.LoadUint64(&b.droppedMetrics),
+		"daily_report_cron":           b.opts.DailyReportCron,
+		"flood_limit":                 b.opts.FloodLimit,
+		"flood_window":                b.opts.FloodWindow.String(),
+		"bot_owner_count":             len(b.botOwners),
+		"bot_owner_can_manage_groups": b.opts.BotOwnerCanManageGroups,
 	}
 }
 
