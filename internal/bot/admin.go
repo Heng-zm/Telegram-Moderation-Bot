@@ -42,6 +42,9 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cfg
 	case "checkbot":
 		b.sendBotPermissionCheck(ctx, msg, cfg)
 		return true
+	case "status":
+		b.sendGroupStatus(ctx, msg, cfg)
+		return true
 	default:
 		return false
 	}
@@ -49,7 +52,7 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cfg
 
 func isGroupOwnerCommand(command string) bool {
 	switch command {
-	case "settings", "lock", "unlock", "setlog", "clearlog", "badword", "allowdomain", "allow", "checkbot":
+	case "settings", "lock", "unlock", "setlog", "clearlog", "badword", "allowdomain", "allow", "checkbot", "status":
 		return true
 	default:
 		return false
@@ -295,6 +298,80 @@ func (b *Bot) sendBotPermissionCheck(ctx context.Context, msg *tgbotapi.Message,
 		status,
 	)
 	sendHTML(b.api, msg.Chat.ID, text)
+}
+
+func (b *Bot) sendGroupStatus(ctx context.Context, msg *tgbotapi.Message, cfg *models.Group) {
+	if msg == nil || cfg == nil {
+		return
+	}
+	stats, err := b.store.GetGroupTodayStats(ctx, cfg.ChatID)
+	if err != nil {
+		log.Printf("[status] group=%d: %v", cfg.ChatID, err)
+		sendText(b.api, msg.Chat.ID, "❌ Could not load group status.")
+		return
+	}
+	text := fmt.Sprintf(
+		"📊 <b>Group Status</b>\n"+
+			"Chat ID: <code>%d</code>\n"+
+			"Language: <code>%s</code>\n"+
+			"Log channel: <code>%d</code>\n"+
+			"CAPTCHA: <code>%t</code>\n"+
+			"Link filter: <code>%t</code>\n"+
+			"Strike engine: <code>%t</code>\n"+
+			"Block forwards: <code>%t</code>\n"+
+			"Blocked media: <code>%s</code>\n\n"+
+			"<b>Today</b>\n"+
+			"Deleted messages: <code>%d</code>\n"+
+			"Strikes issued: <code>%d</code>\n"+
+			"Users banned/kicked: <code>%d</code>",
+		cfg.ChatID,
+		escapeHTML(cfg.Language),
+		cfg.LogChannelID,
+		cfg.CaptchaEnabled,
+		cfg.LinksEnabled,
+		cfg.StrikesEnabled,
+		cfg.BlockForwards,
+		escapeHTML(blockedMediaSummary(cfg)),
+		stats.MessagesDeleted,
+		stats.StrikesIssued,
+		stats.SpammersKicked,
+	)
+	sendHTML(b.api, msg.Chat.ID, text)
+}
+
+func blockedMediaSummary(cfg *models.Group) string {
+	if cfg == nil {
+		return "none"
+	}
+	var items []string
+	if cfg.BlockPhotos {
+		items = append(items, "photos")
+	}
+	if cfg.BlockVideos {
+		items = append(items, "videos")
+	}
+	if cfg.BlockDocuments {
+		items = append(items, "documents")
+	}
+	if cfg.BlockAudio {
+		items = append(items, "audio")
+	}
+	if cfg.BlockVoice {
+		items = append(items, "voice")
+	}
+	if cfg.BlockStickers {
+		items = append(items, "stickers")
+	}
+	if cfg.BlockAnimations {
+		items = append(items, "GIFs")
+	}
+	if cfg.BlockVideoNotes {
+		items = append(items, "video_notes")
+	}
+	if len(items) == 0 {
+		return "none"
+	}
+	return strings.Join(items, ", ")
 }
 
 func (b *Bot) handleBadWordCommand(ctx context.Context, msg *tgbotapi.Message, cfg *models.Group) {

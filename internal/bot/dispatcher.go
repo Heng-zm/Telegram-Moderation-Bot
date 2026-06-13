@@ -91,5 +91,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	if msg.From == nil {
 		return
 	}
+	if b.opts.ExemptAdmins && b.isGroupModerator(ctx, msg.Chat.ID, msg.From.ID) {
+		return
+	}
 	b.runSecurityChecks(ctx, msg, cfg)
 }

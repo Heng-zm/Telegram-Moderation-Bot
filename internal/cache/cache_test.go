@@ -61,3 +61,25 @@ func TestFloodLimiterSlidingWindow(t *testing.T) {
 		t.Fatal("old events should expire outside the sliding window")
 	}
 }
+
+func TestCooldownLimiter(t *testing.T) {
+	limiter := NewCooldownLimiter(30 * time.Second)
+	now := time.Unix(2000, 0)
+	allowed, wait := limiter.Allow(-100, 42, now)
+	if !allowed || wait != 0 {
+		t.Fatalf("first action should be allowed, allowed=%v wait=%s", allowed, wait)
+	}
+
+	allowed, wait = limiter.Allow(-100, 42, now.Add(10*time.Second))
+	if allowed {
+		t.Fatal("second action inside cooldown should be blocked")
+	}
+	if wait <= 0 || wait > 20*time.Second {
+		t.Fatalf("expected about 20s wait, got %s", wait)
+	}
+
+	allowed, wait = limiter.Allow(-100, 42, now.Add(31*time.Second))
+	if !allowed || wait != 0 {
+		t.Fatalf("action after cooldown should be allowed, allowed=%v wait=%s", allowed, wait)
+	}
+}

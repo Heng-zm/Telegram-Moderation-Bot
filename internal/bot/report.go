@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telemod/internal/models"
@@ -33,6 +34,10 @@ func (b *Bot) handleReportCommand(ctx context.Context, msg *tgbotapi.Message, cf
 	reporter := msg.From
 	if reporter == nil {
 		sendText(b.api, msg.Chat.ID, T(cfg.Language, "report_no_user"))
+		return true
+	}
+	if ok, wait := b.reportLimiter.Allow(msg.Chat.ID, reporter.ID, time.Now()); !ok {
+		sendText(b.api, msg.Chat.ID, fmt.Sprintf("⏳ Please wait %s before sending another report.", humanWait(wait)))
 		return true
 	}
 	fwd := tgbotapi.NewForward(cfg.LogChannelID, msg.Chat.ID, msg.ReplyToMessage.MessageID)
@@ -133,4 +138,22 @@ func parseReportCallbackData(data string) (string, int64, int64, int, bool) {
 		return "", 0, 0, 0, false
 	}
 	return action, chatID, offenderID, int(messageID64), true
+}
+
+func humanWait(d time.Duration) string {
+	if d <= 0 {
+		return "a moment"
+	}
+	seconds := int(d.Round(time.Second).Seconds())
+	if seconds <= 1 {
+		return "1 second"
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%d seconds", seconds)
+	}
+	minutes := (seconds + 59) / 60
+	if minutes == 1 {
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", minutes)
 }

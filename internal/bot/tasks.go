@@ -35,6 +35,32 @@ func (b *Bot) scheduledTaskWorker(ctx context.Context) {
 	}
 }
 
+func (b *Bot) scheduledTaskCleanupWorker(ctx context.Context) {
+	if b.opts.TaskCleanupInterval <= 0 || b.opts.TaskCleanupAge <= 0 {
+		return
+	}
+	ticker := time.NewTicker(b.opts.TaskCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			deleted, err := b.store.CleanupFinishedTasks(cleanupCtx, b.opts.TaskCleanupAge)
+			cancel()
+			if err != nil {
+				log.Printf("[tasks] cleanup finished tasks: %v", err)
+				continue
+			}
+			if deleted > 0 {
+				log.Printf("[tasks] cleaned up %d finished task(s) older than %s", deleted, b.opts.TaskCleanupAge)
+			}
+		}
+	}
+}
+
 func (b *Bot) processDueTasks(ctx context.Context) {
 	tasks, err := b.store.ClaimDueTasks(ctx, b.opts.TaskBatchSize)
 	if err != nil {

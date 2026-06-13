@@ -110,12 +110,14 @@ If you upgraded from an older ZIP and see `ERROR: relation "scheduled_tasks" doe
 - `/badword add <word>`, `/badword remove <word>`, `/badword list`.
 - `/allowdomain add <domain>`, `/allowdomain remove <domain>`, `/allowdomain list`.
 - `/checkbot` checks whether the bot is admin in the current group/channel and reminds you which Telegram permissions are required.
+- `/status` shows the current group settings and today's moderation counters.
 
 ## User commands
 
 - Reply to a message with `/report` to forward it to `LogChannelID` with admin action buttons:
   - `Ban User`
   - `Delete & Strike`
+- `/report` has a per-user cooldown configured by `BOT_REPORT_COOLDOWN` to prevent report spam.
 
 ## Scheduled task queue
 
@@ -125,11 +127,11 @@ Delayed actions are stored in `scheduled_tasks` and processed by a background wo
 - Delayed message deletion.
 - Mute expiry / unmute.
 
-This lets the bot resume pending moderation actions after a restart.
+This lets the bot resume pending moderation actions after a restart. Completed and cancelled tasks are cleaned up automatically after `BOT_TASK_CLEANUP_AGE` on the `BOT_TASK_CLEANUP_INTERVAL` schedule, so the table does not grow forever.
 
 ## Anti-flood
 
-Defaults: more than 5 messages in 3 seconds triggers deletion and a strike. Configure with:
+Defaults: more than 5 messages in 3 seconds triggers deletion and a strike. Telegram group/channel admins are exempt from auto-moderation by default via `BOT_EXEMPT_ADMINS=true`. Configure flood behavior with:
 
 ```env
 BOT_FLOOD_LIMIT=5
@@ -170,3 +172,11 @@ When Link Filter is enabled and the whitelist is empty, any detected link is blo
 - Added bot-owner `/tasks` command and dashboard button.
 - Dispatcher now records channel posts and edited messages instead of silently ignoring them.
 - Delete metrics are now counted only after a successful Telegram delete request.
+
+## v5 bug fixes and improvements
+
+- Fixed a syntax error in `cmd/telemod/main.go` caused by an extra closing brace after `mustEnv`.
+- Added owner-only `/status` for quick group settings and daily moderation counters.
+- Added `BOT_EXEMPT_ADMINS=true` so Telegram admins/owners are not hit by anti-flood, link, media, or bad-word checks by default.
+- Added `/report` cooldown via `BOT_REPORT_COOLDOWN` to reduce report spam.
+- Added scheduled task cleanup via `BOT_TASK_CLEANUP_AGE` and `BOT_TASK_CLEANUP_INTERVAL`.

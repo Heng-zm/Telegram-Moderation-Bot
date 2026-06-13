@@ -62,9 +62,13 @@ func main() {
 		TaskPollInterval:        parseDurationEnv("BOT_TASK_POLL_INTERVAL", 5*time.Second),
 		TaskBatchSize:           parseIntEnv("BOT_TASK_BATCH_SIZE", 25, 1, 500),
 		TaskMaxAttempts:         parseIntEnv("BOT_TASK_MAX_ATTEMPTS", 5, 1, 25),
+		TaskCleanupAge:          parseDurationEnv("BOT_TASK_CLEANUP_AGE", 72*time.Hour),
+		TaskCleanupInterval:     parseDurationEnv("BOT_TASK_CLEANUP_INTERVAL", time.Hour),
 		DeleteWebhookOnStart:    parseBoolEnv("BOT_DELETE_WEBHOOK_ON_START", true),
 		DropPendingUpdates:      parseBoolEnv("BOT_DROP_PENDING_UPDATES_ON_START", false),
 		DisableDBPollingLock:    parseBoolEnv("BOT_DISABLE_DB_POLLING_LOCK", false),
+		ExemptAdmins:            parseBoolEnv("BOT_EXEMPT_ADMINS", true),
+		ReportCooldown:          parseDurationEnv("BOT_REPORT_COOLDOWN", 30*time.Second),
 	})
 	if err != nil {
 		log.Fatalf("bot: %v", err)

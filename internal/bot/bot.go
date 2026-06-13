@@ -36,9 +36,13 @@ type Options struct {
 	TaskPollInterval        time.Duration
 	TaskBatchSize           int
 	TaskMaxAttempts         int
+	TaskCleanupAge          time.Duration
+	TaskCleanupInterval     time.Duration
 	DeleteWebhookOnStart    bool
 	DropPendingUpdates      bool
 	DisableDBPollingLock    bool
+	ExemptAdmins            bool
+	ReportCooldown          time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -84,6 +88,15 @@ func (o Options) withDefaults() Options {
 	if o.TaskMaxAttempts <= 0 {
 		o.TaskMaxAttempts = 5
 	}
+	if o.TaskCleanupAge <= 0 {
+		o.TaskCleanupAge = 72 * time.Hour
+	}
+	if o.TaskCleanupInterval <= 0 {
+		o.TaskCleanupInterval = time.Hour
+	}
+	if o.ReportCooldown <= 0 {
+		o.ReportCooldown = 30 * time.Second
+	}
 	return o
 }
 
@@ -97,11 +110,12 @@ type Bot struct {
 	metricCh chan *models.MetricEvent
 	updates  chan tgbotapi.Update
 
-	adminCache   *cache.AdminCache
-	floodLimiter *cache.FloodLimiter
-	scheduler    *cron.Cron
-	opts         Options
-	botOwners    map[int64]struct{}
+	adminCache    *cache.AdminCache
+	floodLimiter  *cache.FloodLimiter
+	reportLimiter *cache.CooldownLimiter
+	scheduler     *cron.Cron
+	opts          Options
+	botOwners     map[int64]struct{}
 
 	processedUpdates uint64
 	droppedAudits    uint64
@@ -125,19 +139,20 @@ func New(token string, store *db.Store, opts Options) (*Bot, error) {
 	}
 
 	b := &Bot{
-		api:          api,
-		store:        store,
-		cache:        cache.NewGroupCache(),
-		captchas:     cache.NewCaptchaStore(),
-		auditCh:      make(chan *models.AuditEvent, opts.AuditQueueSize),
-		metricCh:     make(chan *models.MetricEvent, opts.MetricQueueSize),
-		updates:      make(chan tgbotapi.Update, opts.UpdateQueueSize),
-		adminCache:   cache.NewAdminCache(opts.AdminCacheTTL),
-		floodLimiter: cache.NewFloodLimiter(opts.FloodLimit, opts.FloodWindow),
-		scheduler:    cron.New(cron.WithLocation(time.UTC), cron.WithChain(cron.Recover(cron.DefaultLogger))),
-		opts:         opts,
-		botOwners:    owners,
-		pollLockKey:  defaultPollingLockKey(api.Self.ID),
+		api:           api,
+		store:         store,
+		cache:         cache.NewGroupCache(),
+		captchas:      cache.NewCaptchaStore(),
+		auditCh:       make(chan *models.AuditEvent, opts.AuditQueueSize),
+		metricCh:      make(chan *models.MetricEvent, opts.MetricQueueSize),
+		updates:       make(chan tgbotapi.Update, opts.UpdateQueueSize),
+		adminCache:    cache.NewAdminCache(opts.AdminCacheTTL),
+		floodLimiter:  cache.NewFloodLimiter(opts.FloodLimit, opts.FloodWindow),
+		reportLimiter: cache.NewCooldownLimiter(opts.ReportCooldown),
+		scheduler:     cron.New(cron.WithLocation(time.UTC), cron.WithChain(cron.Recover(cron.DefaultLogger))),
+		opts:          opts,
+		botOwners:     owners,
+		pollLockKey:   defaultPollingLockKey(api.Self.ID),
 	}
 	return b, nil
 }
@@ -168,7 +183,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.safeWorker(ctx, &wg, "audit-log", b.auditLogWorker)
 	b.safeWorker(ctx, &wg, "metrics", b.metricWorker)
 	b.safeWorker(ctx, &wg, "scheduled-task-queue", b.scheduledTaskWorker)
-	b.safeWorker(ctx, &wg, "flood-cleanup", b.floodCleanupWorker)
+	b.safeWorker(ctx, &wg, "scheduled-task-cleanup", b.scheduledTaskCleanupWorker)
+	b.safeWorker(ctx, &wg, "memory-cleanup", b.memoryCleanupWorker)
 
 	if _, err := b.scheduler.AddFunc(b.opts.DailyReportCron, func() {
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -394,7 +410,7 @@ func (b *Bot) trackMetricAsync(chatID int64, column string) {
 	}
 }
 
-func (b *Bot) floodCleanupWorker(ctx context.Context) {
+func (b *Bot) memoryCleanupWorker(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -403,6 +419,7 @@ func (b *Bot) floodCleanupWorker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			b.floodLimiter.CleanupOlderThan(5 * time.Minute)
+			b.reportLimiter.Cleanup()
 		}
 	}
 }
@@ -458,6 +475,13 @@ func (b *Bot) HealthSnapshot() map[string]any {
 		"daily_report_cron":           b.opts.DailyReportCron,
 		"flood_limit":                 b.opts.FloodLimit,
 		"flood_window":                b.opts.FloodWindow.String(),
+		"exempt_admins":               b.opts.ExemptAdmins,
+		"report_cooldown":             b.opts.ReportCooldown.String(),
+		"task_poll_interval":          b.opts.TaskPollInterval.String(),
+		"task_batch_size":             b.opts.TaskBatchSize,
+		"task_max_attempts":           b.opts.TaskMaxAttempts,
+		"task_cleanup_age":            b.opts.TaskCleanupAge.String(),
+		"task_cleanup_interval":       b.opts.TaskCleanupInterval.String(),
 		"bot_owner_count":             len(b.botOwners),
 		"bot_owner_can_manage_groups": b.opts.BotOwnerCanManageGroups,
 		"delete_webhook_on_start":     b.opts.DeleteWebhookOnStart,

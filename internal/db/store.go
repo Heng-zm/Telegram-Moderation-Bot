@@ -578,6 +578,33 @@ func (s *Store) GetDailyStats(ctx context.Context) ([]*models.GroupStats, error)
 	return out, nil
 }
 
+func (s *Store) GetGroupTodayStats(ctx context.Context, chatID int64) (*models.GroupStats, error) {
+	const q = `
+		SELECT g.chat_id,
+		       CURRENT_DATE::date AS record_date,
+		       COALESCE(gs.messages_deleted, 0) AS messages_deleted,
+		       COALESCE(gs.spammers_kicked, 0) AS spammers_kicked,
+		       COALESCE(gs.strikes_issued, 0) AS strikes_issued,
+		       g.language,
+		       g.log_channel_id
+		FROM groups g
+		LEFT JOIN group_stats gs ON gs.chat_id = g.chat_id AND gs.record_date = CURRENT_DATE
+		WHERE g.chat_id = $1`
+	gs := &models.GroupStats{}
+	if err := s.pool.QueryRow(ctx, q, chatID).Scan(
+		&gs.ChatID,
+		&gs.RecordDate,
+		&gs.MessagesDeleted,
+		&gs.SpammersKicked,
+		&gs.StrikesIssued,
+		&gs.Language,
+		&gs.LogChannelID,
+	); err != nil {
+		return nil, fmt.Errorf("db: get group today stats %d: %w", chatID, err)
+	}
+	return gs, nil
+}
+
 func (s *Store) GetAllGroups(ctx context.Context) ([]*models.Group, error) {
 	const q = `
 		SELECT chat_id,
@@ -765,6 +792,21 @@ func (s *Store) FailTask(ctx context.Context, id int64, attempts int, lastErr st
 		return fmt.Errorf("db: reschedule task %d: %w", id, err)
 	}
 	return nil
+}
+
+func (s *Store) CleanupFinishedTasks(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		olderThan = 72 * time.Hour
+	}
+	const q = `
+		DELETE FROM scheduled_tasks
+		WHERE status IN ('done', 'cancelled')
+		  AND updated_at < NOW() - ($1::int * INTERVAL '1 second')`
+	cmd, err := s.pool.Exec(ctx, q, int(olderThan.Seconds()))
+	if err != nil {
+		return 0, fmt.Errorf("db: cleanup finished scheduled tasks: %w", err)
+	}
+	return cmd.RowsAffected(), nil
 }
 
 func isMetricColumn(column string) bool {

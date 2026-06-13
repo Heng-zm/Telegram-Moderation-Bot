@@ -323,3 +323,55 @@ func (l *FloodLimiter) CleanupOlderThan(maxAge time.Duration) {
 		entry.events = kept
 	}
 }
+
+type CooldownLimiter struct {
+	mu       sync.Mutex
+	cooldown time.Duration
+	entries  map[cooldownKey]time.Time
+}
+
+type cooldownKey struct {
+	chatID int64
+	userID int64
+}
+
+func NewCooldownLimiter(cooldown time.Duration) *CooldownLimiter {
+	if cooldown <= 0 {
+		cooldown = 30 * time.Second
+	}
+	return &CooldownLimiter{cooldown: cooldown, entries: make(map[cooldownKey]time.Time)}
+}
+
+// Allow returns true when the user can perform the action now. If false, the
+// returned duration is how long the user should wait before trying again.
+func (l *CooldownLimiter) Allow(chatID, userID int64, now time.Time) (bool, time.Duration) {
+	if l == nil || chatID == 0 || userID == 0 {
+		return true, 0
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := cooldownKey{chatID: chatID, userID: userID}
+	nextAllowed, ok := l.entries[key]
+	if ok && now.Before(nextAllowed) {
+		return false, nextAllowed.Sub(now)
+	}
+	l.entries[key] = now.Add(l.cooldown)
+	return true, 0
+}
+
+func (l *CooldownLimiter) Cleanup() {
+	if l == nil {
+		return
+	}
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, nextAllowed := range l.entries {
+		if now.After(nextAllowed) {
+			delete(l.entries, key)
+		}
+	}
+}
