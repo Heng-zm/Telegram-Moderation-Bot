@@ -1,25 +1,30 @@
 # Render deployment configuration
-# Docs: https://render.com/docs/blueprint-spec
+# Set TELEGRAM_BOT_TOKEN, DATABASE_URL, TELEGRAM_WEBHOOK_URL, and TELEGRAM_WEBHOOK_SECRET_TOKEN manually in Render.
 services:
   - type: web
     name: telemod-bot
     runtime: docker
-    healthCheckPath: /healthz
+    healthCheckPath: /livez
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false        # set manually in Render dashboard
+        sync: false
       - key: DATABASE_URL
-        sync: false        # set manually in Render dashboard
+        sync: false
+      - key: TELEGRAM_WEBHOOK_URL
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET_TOKEN
+        sync: false
+      - key: BOT_MODE
+        value: "webhook"
+      - key: TELEGRAM_WEBHOOK_PATH
+        value: "/tg-webhook"
+      - key: BOT_SET_WEBHOOK_ON_START
+        value: "true"
+      - key: BOT_DROP_PENDING_UPDATES_ON_START
+        value: "false"
       - key: BOT_UPDATE_WORKERS
         value: "32"
       - key: BOT_METRIC_QUEUE_SIZE
         value: "2048"
       - key: BOT_DAILY_REPORT_CRON
         value: "0 0 * * *"
-
-      - key: BOT_DELETE_WEBHOOK_ON_START
-        value: "true"
-      - key: BOT_DROP_PENDING_UPDATES_ON_START
-        value: "false"
-      - key: BOT_DISABLE_DB_POLLING_LOCK
-        value: "false"

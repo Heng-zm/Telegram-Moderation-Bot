@@ -51,6 +51,45 @@ Normal Telegram admins can still handle moderation report buttons such as `Ban U
 Use `/whoami` in a group to confirm whether the bot sees you as `owner`, `admin`, or `member`.
 
 
+## Webhook mode — recommended for Render production
+
+This build defaults to webhook mode to avoid Telegram `getUpdates` conflicts. In webhook mode the bot does not call `getUpdates`; Telegram sends updates to your Render HTTP service.
+
+Required Render env vars:
+
+```env
+BOT_MODE=webhook
+TELEGRAM_WEBHOOK_URL=https://your-render-service.onrender.com/tg-webhook
+TELEGRAM_WEBHOOK_PATH=/tg-webhook
+TELEGRAM_WEBHOOK_SECRET_TOKEN=replace_with_a_long_random_secret
+BOT_SET_WEBHOOK_ON_START=true
+BOT_DROP_PENDING_UPDATES_ON_START=false
+```
+
+`TELEGRAM_WEBHOOK_SECRET_TOKEN` is checked against Telegram's `X-Telegram-Bot-Api-Secret-Token` header. Keep it private and at least 16 characters.
+
+Webhook endpoint:
+
+```text
+POST /tg-webhook
+```
+
+Health endpoints remain on the same HTTP server:
+
+```text
+GET /livez
+GET /readyz
+GET /healthz
+```
+
+For local development with long polling, set:
+
+```env
+BOT_MODE=polling
+BOT_DELETE_WEBHOOK_ON_START=true
+```
+
+
 ## Fix Telegram `getUpdates` conflict
 
 If logs show:
@@ -61,20 +100,23 @@ Conflict: terminated by other getUpdates request; make sure that only one bot in
 
 it means the same `TELEGRAM_BOT_TOKEN` is being polled by another process. Stop old Render services, local `go run` sessions, Docker containers, or any other bot project using the same token. One Telegram bot token can only have one active long-polling consumer.
 
-This build adds two protections:
+The recommended fix is to use webhook mode in production. Polling mode is still available for local development.
+
+Polling protections are still included:
 
 - A Postgres advisory polling lock, enabled by default, so duplicate Render instances using the same DB do not poll at the same time.
-- Startup webhook cleanup, enabled by default, so old webhooks do not block polling mode.
+- Startup webhook cleanup in polling mode, so old webhooks do not block polling.
 
-Config:
+Config for polling-only local development:
 
 ```env
+BOT_MODE=polling
 BOT_DELETE_WEBHOOK_ON_START=true
 BOT_DROP_PENDING_UPDATES_ON_START=false
 BOT_DISABLE_DB_POLLING_LOCK=false
 ```
 
-Keep `BOT_DISABLE_DB_POLLING_LOCK=false` in production. Set `BOT_DROP_PENDING_UPDATES_ON_START=true` only when you intentionally want to clear old pending Telegram updates during a reset.
+Keep `BOT_DISABLE_DB_POLLING_LOCK=false` when using polling. Set `BOT_DROP_PENDING_UPDATES_ON_START=true` only when you intentionally want to clear old pending Telegram updates during a reset.
 
 ## Run
 
@@ -86,11 +128,7 @@ go test ./...
 go run ./cmd/telemod
 ```
 
-For Render, set the start command to:
-
-```bash
-go run ./cmd/telemod
-```
+For Render Docker deployments, use the included Dockerfile. Set `TELEGRAM_WEBHOOK_URL` to your public Render URL plus `/tg-webhook`.
 
 ## Database
 
@@ -180,3 +218,14 @@ When Link Filter is enabled and the whitelist is empty, any detected link is blo
 - Added `BOT_EXEMPT_ADMINS=true` so Telegram admins/owners are not hit by anti-flood, link, media, or bad-word checks by default.
 - Added `/report` cooldown via `BOT_REPORT_COOLDOWN` to reduce report spam.
 - Added scheduled task cleanup via `BOT_TASK_CLEANUP_AGE` and `BOT_TASK_CLEANUP_INTERVAL`.
+
+
+## Webhook update
+
+- Added `BOT_MODE=webhook` runtime path.
+- Added `POST /tg-webhook` Telegram update receiver on the same HTTP server as health checks.
+- Added Telegram webhook registration on startup via `setWebhook`.
+- Added verification of `X-Telegram-Bot-Api-Secret-Token`.
+- Added bounded webhook body size via `BOT_WEBHOOK_MAX_BODY_BYTES`.
+- Kept `BOT_MODE=polling` support for local testing.
+- Health snapshot now exposes runtime mode, webhook path, dropped webhook updates, and queue state.

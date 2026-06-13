@@ -48,6 +48,12 @@ func main() {
 	telegramBot, err := bot.New(token, store, bot.Options{
 		BotOwnerIDs:             parseInt64ListEnv("BOT_OWNER_IDS"),
 		BotOwnerCanManageGroups: parseBoolEnv("BOT_OWNER_CAN_MANAGE_GROUPS", false),
+		RuntimeMode:             stringEnv("BOT_MODE", "webhook"),
+		WebhookURL:              stringEnv("TELEGRAM_WEBHOOK_URL", ""),
+		WebhookPath:             stringEnv("TELEGRAM_WEBHOOK_PATH", "/tg-webhook"),
+		WebhookSecretToken:      stringEnv("TELEGRAM_WEBHOOK_SECRET_TOKEN", ""),
+		SetWebhookOnStart:       parseBoolEnv("BOT_SET_WEBHOOK_ON_START", true),
+		WebhookMaxBodyBytes:     int64(parseIntEnv("BOT_WEBHOOK_MAX_BODY_BYTES", 2097152, 1024, 10485760)),
 		UpdateWorkers:           parseIntEnv("BOT_UPDATE_WORKERS", 32, 1, 512),
 		UpdateQueueSize:         parseIntEnv("BOT_UPDATE_QUEUE_SIZE", 2048, 16, 100000),
 		AuditQueueSize:          parseIntEnv("BOT_AUDIT_QUEUE_SIZE", 1024, 16, 100000),
@@ -78,7 +84,10 @@ func main() {
 	if port == "" {
 		port = defaultPort
 	}
-	healthServer := startHealthServer(port, telegramBot, store)
+	healthServer, err := startHealthServer(port, telegramBot, store)
+	if err != nil {
+		log.Fatalf("health server: %v", err)
+	}
 
 	botErrCh := make(chan error, 1)
 	go func() {
@@ -104,8 +113,11 @@ func main() {
 	log.Println("[main] shutdown complete")
 }
 
-func startHealthServer(port string, b *bot.Bot, store *db.Store) *http.Server {
+func startHealthServer(port string, b *bot.Bot, store *db.Store) (*http.Server, error) {
 	mux := http.NewServeMux()
+	if err := b.RegisterWebhookHandler(mux); err != nil {
+		return nil, err
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -164,7 +176,7 @@ func startHealthServer(port string, b *bot.Bot, store *db.Store) *http.Server {
 		}
 	}()
 
-	return srv
+	return srv, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
