@@ -31,6 +31,7 @@ Bot owners can DM the bot:
 
 - `/admin` or `/botadmin` — open the bot service dashboard.
 - `/groups` — list registered groups/channels known by the bot.
+- `/tasks` — show scheduled task counts by status.
 - `/whoami` — show your Telegram ID and bot-owner status.
 
 By default, bot owners cannot change a customer group/channel configuration unless they are also the Telegram creator/owner of that chat. Set `BOT_OWNER_CAN_MANAGE_GROUPS=true` only when you intentionally want emergency support override.
@@ -95,7 +96,9 @@ go run ./cmd/telemod
 
 Run `migrations/0001_init.sql` once in Supabase/Postgres before starting the bot. It is safe for upgrades from the older schema with `block_media`; the migration copies that old value into the new granular media columns.
 
-If you upgraded from an older ZIP and see `ERROR: relation "scheduled_tasks" does not exist`, run `migrations/0002_scheduled_tasks.sql`. The app also performs an idempotent startup check that creates only the `scheduled_tasks` queue table/indexes when the DB user has `CREATE TABLE` permission.
+This build also performs an idempotent startup schema check for every required table: `groups`, `bad_words`, `link_whitelist`, `user_strikes`, `group_stats`, and `scheduled_tasks`. If your DB user has `CREATE TABLE`/`ALTER TABLE` permission, missing tables are created automatically. If the DB user has no DDL permission, startup fails clearly instead of logging missing-table errors every few seconds.
+
+If you upgraded from an older ZIP and see `ERROR: relation "scheduled_tasks" does not exist`, run `migrations/0002_scheduled_tasks.sql` or deploy this build with a DB user that can create the table.
 
 ## Group/channel owner commands
 
@@ -106,6 +109,7 @@ If you upgraded from an older ZIP and see `ERROR: relation "scheduled_tasks" doe
 - `/clearlog` disables audit logging for the group.
 - `/badword add <word>`, `/badword remove <word>`, `/badword list`.
 - `/allowdomain add <domain>`, `/allowdomain remove <domain>`, `/allowdomain list`.
+- `/checkbot` checks whether the bot is admin in the current group/channel and reminds you which Telegram permissions are required.
 
 ## User commands
 
@@ -140,6 +144,12 @@ Daily reports use `github.com/robfig/cron/v3` and UTC by default. Configure with
 BOT_DAILY_REPORT_CRON=0 0 * * *
 ```
 
+## Health endpoints
+
+- `/livez` returns 200 when the HTTP process is alive. Use this for simple Render port checks.
+- `/readyz` returns 200 only when Postgres responds to a ping.
+- `/healthz` returns bot, DB pool, queue, and scheduled task count snapshots.
+
 ## Notes
 
 When Link Filter is enabled and the whitelist is empty, any detected link is blocked. Add domains with `/allowdomain add example.com`.
@@ -151,3 +161,12 @@ When Link Filter is enabled and the whitelist is empty, any detected link is blo
 - CAPTCHA task deduplication is now per chat/user, so re-issued CAPTCHA prompts replace stale pending expiry tasks.
 - Scheduled task execution now catches panics per task and marks the task failed/retryable instead of killing the worker.
 - Non-retryable Telegram errors such as missing messages, kicked bot, or missing rights are treated as completed tasks to prevent an endless retry queue.
+
+## This update round
+
+- Startup now ensures the full core schema, not only `scheduled_tasks`.
+- Added `/livez`, `/readyz`, and richer `/healthz` with scheduled task counts.
+- Added `/checkbot` for group/channel owners to debug missing Telegram permissions.
+- Added bot-owner `/tasks` command and dashboard button.
+- Dispatcher now records channel posts and edited messages instead of silently ignoring them.
+- Delete metrics are now counted only after a successful Telegram delete request.

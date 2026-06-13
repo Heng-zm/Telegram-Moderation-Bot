@@ -13,6 +13,21 @@ func (b *Bot) handleUpdate(ctx context.Context, upd tgbotapi.Update) {
 		b.handleCallback(ctx, upd.CallbackQuery)
 	case upd.Message != nil:
 		b.handleMessage(ctx, upd.Message)
+	case upd.EditedMessage != nil:
+		b.handleMessage(ctx, upd.EditedMessage)
+	case upd.ChannelPost != nil:
+		b.handleChannelPost(ctx, upd.ChannelPost)
+	case upd.EditedChannelPost != nil:
+		b.handleChannelPost(ctx, upd.EditedChannelPost)
+	}
+}
+
+func (b *Bot) handleChannelPost(ctx context.Context, msg *tgbotapi.Message) {
+	if msg == nil || msg.Chat == nil {
+		return
+	}
+	if _, err := b.ensureGroup(ctx, msg.Chat.ID); err != nil {
+		log.Printf("[handler] ensure channel %d: %v", msg.Chat.ID, err)
 	}
 }
 

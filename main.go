@@ -108,14 +108,39 @@ func startHealthServer(port string, b *bot.Bot, store *db.Store) *http.Server {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "telemod"})
+	})
+
+	// /livez is intentionally lightweight. Render can use it to confirm the
+	// process and HTTP server are alive without depending on Telegram or DB.
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
+	})
+
+	// /readyz verifies that dependencies needed for moderation are available.
+	// Use this when you want deployment health to fail if Postgres is down.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := store.Ping(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready", "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		taskCounts, err := store.ScheduledTaskCounts(ctx)
+		if err != nil {
+			log.Printf("[health] scheduled task counts: %v", err)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "ok",
-			"bot":    b.HealthSnapshot(),
-			"db":     store.HealthSnapshot(),
+			"status":          "ok",
+			"bot":             b.HealthSnapshot(),
+			"db":              store.HealthSnapshot(),
+			"scheduled_tasks": taskCounts,
 		})
 	})
 

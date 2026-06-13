@@ -39,6 +39,9 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cfg
 	case "allowdomain", "allow":
 		b.handleAllowDomainCommand(ctx, msg, cfg)
 		return true
+	case "checkbot":
+		b.sendBotPermissionCheck(ctx, msg, cfg)
+		return true
 	default:
 		return false
 	}
@@ -46,7 +49,7 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cfg
 
 func isGroupOwnerCommand(command string) bool {
 	switch command {
-	case "settings", "lock", "unlock", "setlog", "clearlog", "badword", "allowdomain", "allow":
+	case "settings", "lock", "unlock", "setlog", "clearlog", "badword", "allowdomain", "allow", "checkbot":
 		return true
 	default:
 		return false
@@ -256,6 +259,42 @@ func (b *Bot) setLogChannel(ctx context.Context, chatID int64, cfg *models.Group
 		return
 	}
 	sendText(b.api, chatID, T(updated.Language, "log_channel_set"))
+}
+
+func (b *Bot) sendBotPermissionCheck(ctx context.Context, msg *tgbotapi.Message, cfg *models.Group) {
+	_ = ctx
+	if msg == nil || msg.Chat == nil || cfg == nil {
+		return
+	}
+	cm, err := b.api.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: msg.Chat.ID, UserID: b.api.Self.ID},
+	})
+	if err != nil {
+		log.Printf("[checkbot] chat=%d: %v", msg.Chat.ID, err)
+		sendText(b.api, msg.Chat.ID, "❌ Could not check bot permissions. Make sure the bot is still in this group/channel.")
+		return
+	}
+	isAdmin := cm.IsCreator() || cm.IsAdministrator()
+	status := "❌ Not admin"
+	if isAdmin {
+		status = "✅ Admin"
+	}
+	text := fmt.Sprintf(
+		"🧪 <b>Bot Permission Check</b>\n"+
+			"Bot: <code>@%s</code>\n"+
+			"Chat ID: <code>%d</code>\n"+
+			"Admin status: <b>%s</b>\n\n"+
+			"Required permissions for full moderation:\n"+
+			"• Delete messages\n"+
+			"• Ban users\n"+
+			"• Restrict/mute users\n"+
+			"• Change chat permissions for /lock and /unlock\n\n"+
+			"If moderation does not work, promote the bot to admin and enable those rights.",
+		escapeHTML(b.api.Self.UserName),
+		msg.Chat.ID,
+		status,
+	)
+	sendHTML(b.api, msg.Chat.ID, text)
 }
 
 func (b *Bot) handleBadWordCommand(ctx context.Context, msg *tgbotapi.Message, cfg *models.Group) {

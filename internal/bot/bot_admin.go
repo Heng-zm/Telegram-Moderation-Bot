@@ -31,6 +31,13 @@ func (b *Bot) handleBotOwnerDM(ctx context.Context, msg *tgbotapi.Message) bool 
 		}
 		b.sendBotGroups(ctx, msg.Chat.ID)
 		return true
+	case "tasks":
+		if !b.isBotOwner(msg.From.ID) {
+			sendText(b.api, msg.Chat.ID, T("en", "not_bot_owner"))
+			return true
+		}
+		sendHTML(b.api, msg.Chat.ID, b.botTasksText(ctx))
+		return true
 	case "whoami":
 		b.sendWhoAmI(ctx, msg)
 		return true
@@ -70,6 +77,16 @@ func (b *Bot) handleBotAdminCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 			log.Printf("[bot-admin] groups edit: %v", err)
 		}
 		answerCallback(b.api, cb.ID, "Loaded groups.", false)
+	case "tasks":
+		text := b.botTasksText(ctx)
+		edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, text)
+		edit.ParseMode = tgbotapi.ModeHTML
+		kb := botAdminKeyboard()
+		edit.ReplyMarkup = &kb
+		if _, err := b.api.Request(edit); err != nil {
+			log.Printf("[bot-admin] tasks edit: %v", err)
+		}
+		answerCallback(b.api, cb.ID, "Loaded tasks.", false)
 	default:
 		answerCallback(b.api, cb.ID, "Unknown bot-admin action.", true)
 	}
@@ -90,6 +107,9 @@ func botAdminKeyboard() tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🔄 Refresh", "botadmin:refresh"),
 			tgbotapi.NewInlineKeyboardButtonData("📚 Groups", "botadmin:groups"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🧰 Tasks", "botadmin:tasks"),
 		),
 	)
 }
@@ -160,6 +180,28 @@ func (b *Bot) botGroupsText(ctx context.Context) string {
 		sb.WriteString("</code>\n")
 	}
 	return sb.String()
+}
+
+func (b *Bot) botTasksText(ctx context.Context) string {
+	counts, err := b.store.ScheduledTaskCounts(ctx)
+	if err != nil {
+		log.Printf("[bot-admin] scheduled task counts: %v", err)
+		return "❌ Could not load scheduled task counts."
+	}
+	return fmt.Sprintf(
+		"🧰 <b>Scheduled Tasks</b>\n"+
+			"Pending: <code>%d</code>\n"+
+			"Running: <code>%d</code>\n"+
+			"Done: <code>%d</code>\n"+
+			"Failed: <code>%d</code>\n"+
+			"Cancelled: <code>%d</code>\n\n"+
+			"These tasks power restart-safe CAPTCHA expiry, delayed deletes, and unmute actions.",
+		counts["pending"],
+		counts["running"],
+		counts["done"],
+		counts["failed"],
+		counts["cancelled"],
+	)
 }
 
 func (b *Bot) sendWhoAmI(ctx context.Context, msg *tgbotapi.Message) {

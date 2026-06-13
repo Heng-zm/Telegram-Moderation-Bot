@@ -96,11 +96,17 @@ func (b *Bot) applyFloodLimiter(ctx context.Context, msg *tgbotapi.Message, cfg 
 }
 
 func (b *Bot) deleteAndTrack(ctx context.Context, metricChatID, telegramChatID int64, messageID int) {
+	_ = ctx
 	if messageID == 0 {
 		return
 	}
 	if _, err := b.api.Request(tgbotapi.NewDeleteMessage(telegramChatID, messageID)); err != nil {
+		if isNonRetryableTelegramError(err) {
+			log.Printf("[security] delete skipped msg=%d chat=%d: %v", messageID, telegramChatID, err)
+			return
+		}
 		log.Printf("[security] delete msg=%d chat=%d: %v", messageID, telegramChatID, err)
+		return
 	}
 
 	b.trackMetricAsync(metricChatID, "messages_deleted")
